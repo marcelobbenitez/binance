@@ -20,7 +20,7 @@ from assets_config import ASSETS
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ILI_WINDOW_DAYS = 30  # ventana para el chequeo de "nuevo máximo de N días" del ILI
-VOL_HORIZONS_DAYS = (7, 30)  # plazos para el rango de movimiento esperado
+VOL_HORIZONS_DAYS = (7, 14, 30)  # plazos para el rango de movimiento esperado
 
 app = Flask(__name__, static_folder=None)
 

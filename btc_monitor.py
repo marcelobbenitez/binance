@@ -19,7 +19,7 @@ from analysis import analizar_estado
 from assets_config import ASSETS
 
 ILI_WINDOW_DAYS = 30
-VOL_HORIZONS_DAYS = (7, 30)
+VOL_HORIZONS_DAYS = (7, 14, 30)
 
 # En Windows la consola suele usar cp1252, que no puede codificar el símbolo
 # de advertencia usado más abajo; forzamos UTF-8 para evitar un crash.

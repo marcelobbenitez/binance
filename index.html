@@ -120,9 +120,10 @@
   .vol-row { margin-bottom: 0.9rem; }
   .vol-row:last-child { margin-bottom: 0; }
   .vol-row .vol-label { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.3rem; }
-  .vol-row .vol-range { font-size: 1.05rem; font-weight: 600; }
-  .vol-bar { position: relative; height: 6px; border-radius: 3px; background: #262626; margin-top: 0.5rem; }
-  .vol-bar .vol-marker { position: absolute; top: -3px; width: 2px; height: 12px; background: var(--text); }
+  .vol-row .vol-range { font-size: 1.05rem; font-weight: 700; display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+  .vol-range .vol-down { color: var(--down); }
+  .vol-range .vol-up { color: var(--up); }
+  .vol-range .vol-sep { color: var(--muted); font-weight: 400; }
 
   .muted { color: var(--muted); font-size: 0.85rem; }
   .error { color: var(--down); font-size: 0.85rem; }
@@ -477,14 +478,19 @@ function renderMovimiento(asset, mov) {
     ? 'Volatilidad implícita (Deribit, mercado de opciones)'
     : 'Volatilidad histórica realizada (últimos 30 días) — Deribit no cubre este activo o no respondió';
 
-  const ordenHorizontes = ['7d', '30d'];
+  const ordenHorizontes = ['7d', '14d', '30d'];
   const entradas = Object.entries(mov.horizontes).sort(
     (a, b) => ordenHorizontes.indexOf(a[0]) - ordenHorizontes.indexOf(b[0])
   );
   const filas = entradas.map(([horizonte, h]) => `
     <div class="vol-row">
       <div class="vol-label">Próximos ${horizonte.replace('d',' días')} (±1 desvío, ~68%)</div>
-      <div class="vol-range">${fmtUSD(h.precio_min, 0)} — ${fmtUSD(h.precio_max, 0)} <span class="muted">(±${h.pct.toFixed(1)}%)</span></div>
+      <div class="vol-range">
+        <span class="vol-down">▼ ${fmtUSD(h.precio_min, 0)}</span>
+        <span class="vol-sep">—</span>
+        <span class="vol-up">▲ ${fmtUSD(h.precio_max, 0)}</span>
+        <span class="muted">(±${h.pct.toFixed(1)}%)</span>
+      </div>
     </div>
   `).join('');
 

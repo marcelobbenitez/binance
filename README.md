@@ -5,7 +5,8 @@ públicos de Binance, cruzados con el flujo institucional de los ETF spot
 (cuando el activo tiene), el funding rate de futuros y un Índice de Liquidez
 Institucional (ILI), para estimar si cada uno está en sesgo alcista o
 bajista — y además, por separado, un rango estadístico de cuánto suele
-moverse el precio en 7 y 30 días (volatilidad, no una predicción de precio).
+moverse el precio en 7, 14 y 30 días (volatilidad, no una predicción de
+precio).
 
 ## Qué muestra
 
@@ -23,7 +24,7 @@ moverse el precio en 7 y 30 días (volatilidad, no una predicción de precio).
 - Un sesgo consolidado (**ALCISTA** / **BAJISTA** / **NEUTRAL** /
   **DIVERGENCIA**) que cruza las señales anteriores, en vez de mirar
   solo el precio.
-- **Rango de movimiento esperado** a 7 y 30 días, basado en volatilidad
+- **Rango de movimiento esperado** a 7, 14 y 30 días, basado en volatilidad
   implícita de opciones (Deribit, BTC/ETH) o volatilidad histórica realizada
   como fallback (BNB). Es una magnitud estadística de "cuánto suele moverse
   el precio", independiente y complementaria al sesgo — no una predicción de
