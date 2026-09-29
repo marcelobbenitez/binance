@@ -13,10 +13,12 @@ from flask import Flask, abort, jsonify, send_from_directory
 
 import binance_client
 import etf_flows
+import ili
 from analysis import analizar_estado
 from assets_config import ASSETS
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ILI_WINDOW_DAYS = 30  # ventana para el chequeo de "nuevo máximo de N días" del ILI
 
 app = Flask(__name__, static_folder=None)
 
@@ -62,6 +64,16 @@ def api_etf_flows(asset):
         return jsonify({"error": str(e)}), 502
 
 
+@app.get("/api/<asset>/klines")
+def api_klines(asset):
+    cfg = _asset_config(asset)
+    interval = "1d"
+    try:
+        return jsonify({"interval": interval, "velas": binance_client.get_klines(cfg["symbol"], interval=interval, limit=90)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
 @app.get("/api/<asset>/analysis")
 def api_analysis(asset):
     cfg = _asset_config(asset)
@@ -73,14 +85,24 @@ def api_analysis(asset):
 
     funding = binance_client.get_funding_rate(cfg["symbol"])
 
-    flujo_7d, recientes = None, []
+    flujo_7d, recientes, stats = None, [], None
     if cfg["farside_slug"] is not None:
         try:
             flujo_7d, recientes = etf_flows.get_net_flow_usd(cfg["farside_slug"], days=7)
+            stats = etf_flows.get_flow_stats(cfg["farside_slug"])
         except Exception:
             pass
 
-    estado = analizar_estado(ticker, flujo_7d, funding)
+    es_max_30d = None
+    try:
+        velas = binance_client.get_klines(cfg["symbol"], interval="1d", limit=ILI_WINDOW_DAYS)
+        es_max_30d = ili.es_maximo_de_n_dias(ticker["precio"], velas, dias=ILI_WINDOW_DAYS)
+    except Exception:
+        pass
+
+    ili_score = ili.compute_score(flujo_7d, len(recientes), stats)
+
+    estado = analizar_estado(ticker, flujo_7d, funding, ili_score=ili_score, es_max_30d=es_max_30d)
 
     return jsonify({
         "asset": asset,
@@ -89,8 +111,10 @@ def api_analysis(asset):
         "funding_rate_pct": funding,
         "etf_soportado": cfg["farside_slug"] is not None,
         "etf_flujo_7d_dias_con_dato": [r["fecha"] for r in recientes],
+        "es_maximo_30d": es_max_30d,
         "analisis": estado,
         "nota_etf": "Los flujos de ETF son T+1 (Farside los publica con el cierre del día anterior en EE.UU.)",
+        "nota_ili": "ILI simplificado: normaliza el flujo ETF contra su propio rango histórico; no incluye liquidez USD agregada (ver README).",
     })
 
 

@@ -13,8 +13,11 @@ import sys
 
 import binance_client
 import etf_flows
+import ili
 from analysis import analizar_estado
 from assets_config import ASSETS
+
+ILI_WINDOW_DAYS = 30
 
 # En Windows la consola suele usar cp1252, que no puede codificar el símbolo
 # de advertencia usado más abajo; forzamos UTF-8 para evitar un crash.
@@ -39,12 +42,13 @@ def analizar_activo(asset, cfg):
     else:
         print("\nFunding rate: no disponible (endpoint de futuros bloqueado o caído)")
 
-    flujo_7d = None
+    flujo_7d, recientes, stats = None, [], None
     if cfg["farside_slug"] is None:
         print("\nETF flows: no aplica (no hay ETF spot aprobado para este activo)")
     else:
         try:
             flujo_7d, recientes = etf_flows.get_net_flow_usd(cfg["farside_slug"], days=7)
+            stats = etf_flows.get_flow_stats(cfg["farside_slug"])
             print(f"\nFlujo neto ETF spot (últimos {len(recientes)} días con dato): ${flujo_7d:,.1f}M")
             for f in recientes:
                 dato = f"{f['Total']:+.1f}M" if f["Total"] is not None else "sin dato"
@@ -52,12 +56,22 @@ def analizar_activo(asset, cfg):
         except Exception as e:
             print(f"\nETF flows: no se pudo obtener ({e})")
 
-    estado = analizar_estado(ticker, flujo_7d, funding)
+    es_max_30d = None
+    try:
+        velas = binance_client.get_klines(cfg["symbol"], interval="1d", limit=ILI_WINDOW_DAYS)
+        es_max_30d = ili.es_maximo_de_n_dias(ticker["precio"], velas, dias=ILI_WINDOW_DAYS)
+    except Exception:
+        pass
+    ili_score = ili.compute_score(flujo_7d, len(recientes), stats)
+
+    estado = analizar_estado(ticker, flujo_7d, funding, ili_score=ili_score, es_max_30d=es_max_30d)
     print(f"\nSesgo estimado: {estado['sesgo']}")
     for nombre, señal in estado["señales"].items():
         print(f"   [{señal['valor'].upper()}] {nombre}: {señal['detalle']}")
     if estado["divergencia"]:
         print(f"\n   ⚠ {estado['divergencia']['nota']}")
+    if estado["divergencia_ili"]:
+        print(f"\n   ⚠ {estado['divergencia_ili']['nota']}")
     print()
 
 

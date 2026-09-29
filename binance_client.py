@@ -27,6 +27,31 @@ def get_ticker(symbol="BTCUSDT"):
     }
 
 
+def get_klines(symbol="BTCUSDT", interval="1d", limit=90):
+    """Devuelve velas OHLC públicas del spot de Binance, de más antigua a más
+    reciente. Se usa tanto para el gráfico de velas como para calcular el
+    máximo de N días que necesita el ILI.
+    """
+    r = requests.get(
+        f"{SPOT_BASE_URL}/api/v3/klines",
+        params={"symbol": symbol, "interval": interval, "limit": limit},
+        timeout=10,
+    )
+    r.raise_for_status()
+    rows = r.json()
+
+    return [
+        {
+            "time": row[0] // 1000,  # openTime en segundos (lightweight-charts espera UNIX seconds)
+            "open": float(row[1]),
+            "high": float(row[2]),
+            "low": float(row[3]),
+            "close": float(row[4]),
+        }
+        for row in rows
+    ]
+
+
 def get_funding_rate(symbol="BTCUSDT"):
     """Devuelve el funding rate vigente de futuros perpetuos, en porcentaje.
 

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Crypto Monitor</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   :root {
     --bg: #0a0a0a;
@@ -28,7 +29,7 @@
   h1 { font-size: 1.4rem; font-weight: 600; margin: 0 0 0.25rem; }
   .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.25rem; }
 
-  .tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+  .tabs { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
   .tab {
     padding: 0.5rem 1.1rem;
     border-radius: 999px;
@@ -41,6 +42,13 @@
     user-select: none;
   }
   .tab.active { background: var(--text); color: #0a0a0a; border-color: var(--text); }
+
+  .live-dot {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    font-size: 0.75rem; color: var(--muted); margin-left: auto;
+  }
+  .live-dot .dot-ping { width: 8px; height: 8px; border-radius: 50%; background: #444; }
+  .live-dot.on .dot-ping { background: var(--up); box-shadow: 0 0 6px var(--up); }
 
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
@@ -96,6 +104,8 @@
     font-size: 0.85rem;
     border-left: 3px solid var(--yellow);
   }
+  .divergencia-note.roja { border-left-color: var(--down); }
+  .divergencia-note + .divergencia-note { margin-top: 0.6rem; }
 
   .chart { display: flex; align-items: flex-end; gap: 6px; height: 140px; margin-top: 0.5rem; }
   .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }
@@ -103,6 +113,8 @@
   .bar.pos { background: var(--up); }
   .bar.neg { background: var(--down); }
   .bar-date { font-size: 0.6rem; color: var(--muted); margin-top: 0.35rem; writing-mode: vertical-rl; transform: rotate(180deg); height: 3.2em; }
+
+  .candles { width: 100%; height: 280px; margin-top: 0.5rem; }
 
   .muted { color: var(--muted); font-size: 0.85rem; }
   .error { color: var(--down); font-size: 0.85rem; }
@@ -113,9 +125,12 @@
 <body>
 <div class="wrap">
   <h1 id="page-title">Crypto Monitor</h1>
-  <div class="subtitle">Precio spot (Binance) cruzado con flujo institucional (ETF spot) y funding de futuros</div>
+  <div class="subtitle">Precio en vivo (WebSocket Binance) cruzado con flujo institucional (ETF spot), funding de futuros e ILI</div>
 
-  <div class="tabs" id="tabs"></div>
+  <div class="tabs" id="tabs-row">
+    <div class="tabs" id="tabs" style="margin-bottom:0"></div>
+    <div class="live-dot" id="live-dot"><span class="dot-ping"></span><span id="live-label">conectando…</span></div>
+  </div>
 
   <div class="grid">
     <div class="card">
@@ -133,7 +148,12 @@
 
     <div class="card full" id="divergencia-card" style="display:none">
       <h2>Divergencia detectada</h2>
-      <div class="divergencia-note" id="divergencia-text"></div>
+      <div id="divergencia-text"></div>
+    </div>
+
+    <div class="card full">
+      <h2>Gráfico de velas (1D)</h2>
+      <div class="candles" id="candles"></div>
     </div>
 
     <div class="card full">
@@ -146,9 +166,11 @@
   </div>
 
   <div class="footnote">
-    Fuentes: Binance (<code>data-api.binance.vision</code>, precio y funding) y
-    Farside Investors (<code>farside.co.uk</code>, flujo ETF, dato T+1, solo para BTC y ETH).
-    Esto no es asesoramiento financiero.
+    Fuentes: Binance (<code>data-api.binance.vision</code> REST + <code>data-stream.binance.vision</code> WebSocket
+    para precio y velas en vivo, <code>fapi.binance.com</code> para funding) y Farside Investors
+    (<code>farside.co.uk</code>, flujo ETF, dato T+1, solo para BTC y ETH). El ILI es una versión simplificada
+    que normaliza el flujo ETF contra su propio rango histórico (no incluye liquidez USD agregada). Gráfico de
+    velas con <code>lightweight-charts</code> (TradingView). Esto no es asesoramiento financiero.
   </div>
 </div>
 
@@ -158,9 +180,20 @@ const ASSETS = {
   eth: { symbol: 'ETHUSDT', label: 'ETH' },
   bnb: { symbol: 'BNBUSDT', label: 'BNB' },
 };
-const REFRESH_MS = 30000;
+const SYMBOL_TO_ASSET = Object.fromEntries(Object.entries(ASSETS).map(([id, cfg]) => [cfg.symbol, id]));
+const ANALYSIS_REFRESH_MS = 30000; // el sesgo/ETF/funding no necesitan ser instantáneos
+const WS_URL = 'wss://data-stream.binance.vision/stream?streams=' +
+  Object.values(ASSETS).map(a => `${a.symbol.toLowerCase()}@ticker`).join('/') + '/' +
+  Object.values(ASSETS).map(a => `${a.symbol.toLowerCase()}@kline_1d`).join('/');
+
 let currentAsset = 'btc';
-let refreshTimer = null;
+let analysisTimer = null;
+let ws = null;
+let wsReconnectDelay = 1000;
+
+let chart = null;
+let chartSeries = null;
+const candlesByAsset = { btc: null, eth: null, bnb: null };
 
 function fmtUSD(n, decimals = 2) {
   return '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: decimals, maximumFractionDigits: decimals});
@@ -187,14 +220,28 @@ function selectAsset(id) {
   currentAsset = id;
   renderTabs();
   document.getElementById('page-title').textContent = `${ASSETS[id].label} Monitor`;
-  refreshAll();
+  loadPriceRest(id); // pintado inmediato mientras el WS toma la posta
+  loadAnalysis(id);
+  loadETFChart(id);
+  loadCandles(id);
 }
 
-async function loadPrice(asset) {
+// ---------- Precio: WebSocket en vivo con fallback REST ----------
+
+function renderPrice(d) {
   const priceEl = document.getElementById('price');
   const changeEl = document.getElementById('change');
   const rangeEl = document.getElementById('range');
-  document.getElementById('price-card-title').textContent = `${ASSETS[asset].symbol}`;
+  priceEl.textContent = fmtUSD(d.precio);
+  priceEl.classList.remove('error');
+  const up = d.cambio_24h_pct >= 0;
+  changeEl.textContent = (up ? '▲ ' : '▼ ') + d.cambio_24h_pct.toFixed(2) + '% (24h)';
+  changeEl.className = 'change ' + (up ? 'up' : 'down');
+  rangeEl.textContent = `Rango 24h: ${fmtUSD(d.min_24h, 0)} — ${fmtUSD(d.max_24h, 0)}`;
+}
+
+async function loadPriceRest(asset) {
+  document.getElementById('price-card-title').textContent = ASSETS[asset].symbol;
   try {
     let d;
     try {
@@ -211,31 +258,169 @@ async function loadPrice(asset) {
         min_24h: parseFloat(raw.lowPrice),
       };
     }
-    priceEl.textContent = fmtUSD(d.precio);
-    priceEl.classList.remove('error');
-    const up = d.cambio_24h_pct >= 0;
-    changeEl.textContent = (up ? '▲ ' : '▼ ') + d.cambio_24h_pct.toFixed(2) + '% (24h)';
-    changeEl.className = 'change ' + (up ? 'up' : 'down');
-    rangeEl.textContent = `Rango 24h: ${fmtUSD(d.min_24h, 0)} — ${fmtUSD(d.max_24h, 0)}`;
+    if (asset === currentAsset) renderPrice(d);
   } catch (e) {
-    priceEl.textContent = 'Error al cargar';
-    priceEl.classList.add('error');
+    if (asset === currentAsset) {
+      document.getElementById('price').textContent = 'Error al cargar';
+      document.getElementById('price').classList.add('error');
+    }
   }
 }
+
+function setLiveStatus(on, label) {
+  const dot = document.getElementById('live-dot');
+  const lbl = document.getElementById('live-label');
+  dot.classList.toggle('on', on);
+  lbl.textContent = label;
+}
+
+function connectWebSocket() {
+  try {
+    ws = new WebSocket(WS_URL);
+  } catch (e) {
+    scheduleReconnect();
+    return;
+  }
+
+  ws.onopen = () => {
+    wsReconnectDelay = 1000;
+    setLiveStatus(true, 'en vivo');
+  };
+
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    const stream = msg.stream || '';
+    const data = msg.data;
+    if (!data) return;
+
+    if (stream.endsWith('@ticker')) {
+      const assetId = SYMBOL_TO_ASSET[data.s];
+      if (!assetId) return;
+      const parsed = {
+        precio: parseFloat(data.c),
+        cambio_24h_pct: parseFloat(data.P),
+        max_24h: parseFloat(data.h),
+        min_24h: parseFloat(data.l),
+      };
+      if (assetId === currentAsset) renderPrice(parsed);
+    } else if (stream.includes('@kline_')) {
+      const assetId = SYMBOL_TO_ASSET[data.s];
+      if (!assetId) return;
+      const k = data.k;
+      applyKlineUpdate(assetId, {
+        time: Math.floor(k.t / 1000),
+        open: parseFloat(k.o),
+        high: parseFloat(k.h),
+        low: parseFloat(k.l),
+        close: parseFloat(k.c),
+      });
+    }
+  };
+
+  ws.onclose = () => {
+    setLiveStatus(false, 'reconectando…');
+    scheduleReconnect();
+  };
+  ws.onerror = () => {
+    ws.close();
+  };
+}
+
+function scheduleReconnect() {
+  setTimeout(connectWebSocket, wsReconnectDelay);
+  wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000);
+}
+
+// ---------- Gráfico de velas ----------
+
+function initChart() {
+  if (!window.LightweightCharts) return; // CDN bloqueada: la app sigue funcionando sin velas
+  const container = document.getElementById('candles');
+  chart = LightweightCharts.createChart(container, {
+    width: container.clientWidth,
+    height: 280,
+    layout: { background: { color: 'transparent' }, textColor: '#8a8a8a' },
+    grid: { vertLines: { color: '#1f1f1f' }, horzLines: { color: '#1f1f1f' } },
+    timeScale: { borderColor: '#262626' },
+    rightPriceScale: { borderColor: '#262626' },
+  });
+  chartSeries = chart.addCandlestickSeries({
+    upColor: '#00c853', downColor: '#ff5252', borderVisible: false,
+    wickUpColor: '#00c853', wickDownColor: '#ff5252',
+  });
+  window.addEventListener('resize', () => {
+    if (chart) chart.applyOptions({ width: container.clientWidth });
+  });
+}
+
+async function loadCandles(asset) {
+  if (!chartSeries) return;
+  if (candlesByAsset[asset]) {
+    if (asset === currentAsset) chartSeries.setData(candlesByAsset[asset]);
+    return;
+  }
+  try {
+    let velas;
+    try {
+      const d = await fetchJSON(`/api/${asset}/klines`);
+      if (d.error) throw new Error(d.error);
+      velas = d.velas;
+    } catch (backendErr) {
+      const r = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${ASSETS[asset].symbol}&interval=1d&limit=90`);
+      const raw = await r.json();
+      velas = raw.map(row => ({ time: Math.floor(row[0] / 1000), open: +row[1], high: +row[2], low: +row[3], close: +row[4] }));
+    }
+    candlesByAsset[asset] = velas;
+    if (asset === currentAsset) chartSeries.setData(velas);
+  } catch (e) {
+    // sin velas: el resto de la app sigue funcionando igual
+  }
+}
+
+function applyKlineUpdate(assetId, candle) {
+  const arr = candlesByAsset[assetId];
+  if (!arr || !arr.length) return; // esperar a que la carga inicial (REST) llegue primero
+  const last = arr[arr.length - 1];
+  if (last && last.time === candle.time) {
+    arr[arr.length - 1] = candle;
+  } else if (!last || candle.time > last.time) {
+    arr.push(candle);
+  }
+  if (assetId === currentAsset && chartSeries) {
+    chartSeries.update(candle);
+  }
+}
+
+// ---------- Sesgo / señales / divergencias ----------
 
 function signalDot(valor) {
   return `<span class="dot ${valor}"></span>`;
 }
 
+function renderDivergencias(analisis) {
+  const divCard = document.getElementById('divergencia-card');
+  const divText = document.getElementById('divergencia-text');
+  const notas = [];
+  if (analisis.divergencia) notas.push({ ...analisis.divergencia, roja: false });
+  if (analisis.divergencia_ili) notas.push({ ...analisis.divergencia_ili, roja: analisis.divergencia_ili.tipo === 'DIVERGENCIA_ILI_ROJA' });
+
+  if (!notas.length) {
+    divCard.style.display = 'none';
+    return;
+  }
+  divCard.style.display = '';
+  divText.innerHTML = notas.map(n => `<div class="divergencia-note ${n.roja ? 'roja' : ''}">${n.nota}</div>`).join('');
+}
+
 async function loadAnalysis(asset) {
   const badgeWrap = document.getElementById('sesgo-badge');
   const signalsEl = document.getElementById('signals');
-  const divCard = document.getElementById('divergencia-card');
-  const divText = document.getElementById('divergencia-text');
 
   try {
     const d = await fetchJSON(`/api/${asset}/analysis`);
     if (d.error) throw new Error(d.error);
+    if (asset !== currentAsset) return;
 
     const sesgo = d.analisis.sesgo;
     const labelMap = {
@@ -252,23 +437,20 @@ async function loadAnalysis(asset) {
       <div class="signal-row">${signalDot(s.precio.valor)}<span class="signal-label">Precio</span> ${s.precio.detalle}</div>
       <div class="signal-row">${signalDot(s.etf.valor)}<span class="signal-label">ETF (7d)</span> ${s.etf.detalle}</div>
       <div class="signal-row">${signalDot(s.funding.valor)}<span class="signal-label">Funding</span> ${s.funding.detalle}</div>
+      <div class="signal-row">${signalDot(s.ili.valor)}<span class="signal-label">ILI</span> ${s.ili.detalle}</div>
     `;
 
-    if (d.analisis.divergencia) {
-      divCard.style.display = '';
-      divText.textContent = d.analisis.divergencia.nota;
-    } else {
-      divCard.style.display = 'none';
-    }
+    renderDivergencias(d.analisis);
   } catch (e) {
+    if (asset !== currentAsset) return;
     badgeWrap.innerHTML = '<span class="badge NEUTRAL">Backend no disponible</span>';
-    signalsEl.innerHTML = '<div class="error">Iniciá el backend con <code>python app.py</code> para ver el sesgo alcista/bajista y el flujo ETF.</div>';
-    divCard.style.display = 'none';
+    signalsEl.innerHTML = '<div class="error">Iniciá el backend con <code>python app.py</code> para ver el sesgo alcista/bajista, el ILI y el flujo ETF.</div>';
+    document.getElementById('divergencia-card').style.display = 'none';
   }
 }
 
 async function loadETFChart(asset) {
-  const chart = document.getElementById('chart');
+  const chartEl = document.getElementById('chart');
   const note = document.getElementById('etf-note');
   const title = document.getElementById('etf-card-title');
   title.textContent = `Flujo neto ETF spot ${ASSETS[asset].label} — últimos días (Total, USD millones)`;
@@ -276,9 +458,10 @@ async function loadETFChart(asset) {
   try {
     const d = await fetchJSON(`/api/${asset}/etf-flows`);
     if (d.error) throw new Error(d.error);
+    if (asset !== currentAsset) return;
 
     if (d.soportado === false) {
-      chart.innerHTML = '';
+      chartEl.innerHTML = '';
       note.innerHTML = `${ASSETS[asset].label} no tiene ETF spot aprobado en EE.UU., así que esta capa de señal no aplica.`;
       return;
     }
@@ -287,7 +470,7 @@ async function loadETFChart(asset) {
     if (!flows.length) throw new Error('sin datos');
 
     const max = Math.max(...flows.map(f => Math.abs(f.Total)), 1);
-    chart.innerHTML = flows.map(f => {
+    chartEl.innerHTML = flows.map(f => {
       const pct = Math.max((Math.abs(f.Total) / max) * 100, 2);
       const cls = f.Total >= 0 ? 'pos' : 'neg';
       const shortDate = f.fecha.replace(/^(\d{1,2}) (\w{3}).*/, '$1 $2');
@@ -299,26 +482,30 @@ async function loadETFChart(asset) {
 
     note.textContent = 'Dato T+1 (se publica con el cierre del día hábil anterior en EE.UU.)';
   } catch (e) {
-    chart.innerHTML = '';
+    if (asset !== currentAsset) return;
+    chartEl.innerHTML = '';
     note.innerHTML = `<span class="error">No se pudo cargar el flujo ETF. Iniciá el backend con <code>python app.py</code>.</span>`;
   }
 }
 
-function refreshAll() {
-  const asset = currentAsset;
-  loadPrice(asset);
-  loadAnalysis(asset);
-  loadETFChart(asset);
-}
-
-function startAutoRefresh() {
-  if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(refreshAll, REFRESH_MS);
+function startAnalysisRefresh() {
+  if (analysisTimer) clearInterval(analysisTimer);
+  analysisTimer = setInterval(() => {
+    loadAnalysis(currentAsset);
+    loadETFChart(currentAsset);
+    // Si el WS no está conectado, el precio se refresca por REST como red de seguridad.
+    if (!ws || ws.readyState !== WebSocket.OPEN) loadPriceRest(currentAsset);
+  }, ANALYSIS_REFRESH_MS);
 }
 
 renderTabs();
-refreshAll();
-startAutoRefresh();
+initChart();
+loadPriceRest(currentAsset);
+loadAnalysis(currentAsset);
+loadETFChart(currentAsset);
+loadCandles(currentAsset);
+connectWebSocket();
+startAnalysisRefresh();
 </script>
 </body>
 </html>
