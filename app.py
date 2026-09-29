@@ -6,18 +6,22 @@ pasa por este backend para evitar problemas de CORS/geo-bloqueo en el
 navegador y para poder cachear el scrape de Farside.
 """
 
+import os
+
 from flask import Flask, jsonify, send_from_directory
 
 import binance_client
 import etf_flows
 from analysis import analizar_estado
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 app = Flask(__name__, static_folder=None)
 
 
 @app.get("/")
 def index():
-    return send_from_directory(".", "index.html")
+    return send_from_directory(BASE_DIR, "index.html")
 
 
 @app.get("/api/btc")
