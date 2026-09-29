@@ -13,6 +13,7 @@ from flask import Flask, abort, jsonify, send_from_directory
 
 import binance_client
 import etf_flows
+import exchange_netflow
 import ili
 from analysis import analizar_estado
 from assets_config import ASSETS
@@ -38,7 +39,11 @@ def index():
 @app.get("/api/assets")
 def api_assets():
     return jsonify({
-        asset: {"label": cfg["label"], "tiene_etf": cfg["farside_slug"] is not None}
+        asset: {
+            "label": cfg["label"],
+            "tiene_etf": cfg["farside_slug"] is not None,
+            "tiene_exchange_netflow": cfg["cryptoquant_asset"] is not None and exchange_netflow.is_configured(),
+        }
         for asset, cfg in ASSETS.items()
     })
 
@@ -60,6 +65,20 @@ def api_etf_flows(asset):
     try:
         flows = etf_flows.get_etf_flows(cfg["farside_slug"])
         return jsonify({"flows": flows[-14:], "soportado": True})  # ~2 semanas alcanza para el gráfico
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.get("/api/<asset>/exchange-netflow")
+def api_exchange_netflow(asset):
+    cfg = _asset_config(asset)
+    if cfg["cryptoquant_asset"] is None:
+        return jsonify({"dias": [], "soportado": False, "razon": "activo_no_soportado"})
+    if not exchange_netflow.is_configured():
+        return jsonify({"dias": [], "soportado": False, "razon": "sin_api_key"})
+    try:
+        _, dias = exchange_netflow.get_net_flow_sum(cfg["cryptoquant_asset"], days=14)
+        return jsonify({"dias": dias, "soportado": True, "unidad": cfg["unit"]})
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 
@@ -102,7 +121,18 @@ def api_analysis(asset):
 
     ili_score = ili.compute_score(flujo_7d, len(recientes), stats)
 
-    estado = analizar_estado(ticker, flujo_7d, funding, ili_score=ili_score, es_max_30d=es_max_30d)
+    exchange_netflow_neto = None
+    if cfg["cryptoquant_asset"] is not None:
+        try:
+            exchange_netflow_neto, _ = exchange_netflow.get_net_flow_sum(cfg["cryptoquant_asset"], days=7)
+        except Exception:
+            pass
+
+    estado = analizar_estado(
+        ticker, flujo_7d, funding,
+        ili_score=ili_score, es_max_30d=es_max_30d,
+        exchange_netflow_neto=exchange_netflow_neto, exchange_netflow_unidad=cfg["unit"],
+    )
 
     return jsonify({
         "asset": asset,
@@ -111,10 +141,12 @@ def api_analysis(asset):
         "funding_rate_pct": funding,
         "etf_soportado": cfg["farside_slug"] is not None,
         "etf_flujo_7d_dias_con_dato": [r["fecha"] for r in recientes],
+        "exchange_netflow_soportado": cfg["cryptoquant_asset"] is not None and exchange_netflow.is_configured(),
         "es_maximo_30d": es_max_30d,
         "analisis": estado,
         "nota_etf": "Los flujos de ETF son T+1 (Farside los publica con el cierre del día anterior en EE.UU.)",
         "nota_ili": "ILI simplificado: normaliza el flujo ETF contra su propio rango histórico; no incluye liquidez USD agregada (ver README).",
+        "nota_exchange_netflow": "Requiere CRYPTOQUANT_API_KEY propia (no incluida); sin ella esta capa queda en \"sin_datos\".",
     })
 
 

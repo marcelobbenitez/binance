@@ -13,6 +13,7 @@ import sys
 
 import binance_client
 import etf_flows
+import exchange_netflow
 import ili
 from analysis import analizar_estado
 from assets_config import ASSETS
@@ -64,7 +65,24 @@ def analizar_activo(asset, cfg):
         pass
     ili_score = ili.compute_score(flujo_7d, len(recientes), stats)
 
-    estado = analizar_estado(ticker, flujo_7d, funding, ili_score=ili_score, es_max_30d=es_max_30d)
+    netflow_neto = None
+    if cfg["cryptoquant_asset"] is None:
+        print("\nFlujo a exchanges: no aplica (activo no soportado por CryptoQuant en esta app)")
+    elif not exchange_netflow.is_configured():
+        print("\nFlujo a exchanges: no configurado (definí CRYPTOQUANT_API_KEY para activarlo)")
+    else:
+        try:
+            netflow_neto, dias = exchange_netflow.get_net_flow_sum(cfg["cryptoquant_asset"], days=7)
+            print(f"\nFlujo neto a exchanges (últimos {len(dias)} días con dato): {netflow_neto:+,.0f} {cfg['unit']}")
+            for d in dias:
+                print(f"   {d['fecha']}: {d['netflow']:+,.1f}")
+        except Exception as e:
+            print(f"\nFlujo a exchanges: no se pudo obtener ({e})")
+
+    estado = analizar_estado(
+        ticker, flujo_7d, funding, ili_score=ili_score, es_max_30d=es_max_30d,
+        exchange_netflow_neto=netflow_neto, exchange_netflow_unidad=cfg["unit"],
+    )
     print(f"\nSesgo estimado: {estado['sesgo']}")
     for nombre, señal in estado["señales"].items():
         print(f"   [{señal['valor'].upper()}] {nombre}: {señal['detalle']}")

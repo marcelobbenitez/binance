@@ -2,10 +2,9 @@
 
 Sirve tanto para BTC como para ETH o BNB: no se usa una sola métrica, se
 cruzan precio spot, flujo neto de ETF (7 días, cuando el activo tiene ETF
-spot), funding rate de futuros perpetuos y el Índice de Liquidez
-Institucional (ILI, ver ili.py). El flujo neto a exchanges (retiros/
-depósitos on-chain) queda fuera porque requiere una API on-chain de pago
-(CryptoQuant/Glassnode); ver README para el detalle de esta limitación.
+spot), funding rate de futuros perpetuos, el Índice de Liquidez
+Institucional (ILI, ver ili.py) y el flujo neto a exchanges (CryptoQuant,
+ver exchange_netflow.py; requiere API key propia, opcional).
 """
 
 FUNDING_OVERHEATED_PCT = 0.05   # funding > esto: posicionamiento largo excesivo
@@ -52,6 +51,16 @@ def _signal_ili(ili_score):
     return "neutral", f"ILI en {ili_score:.0f}/100 — liquidez institucional moderada"
 
 
+def _signal_exchange_netflow(netflow_neto, unidad):
+    if netflow_neto is None:
+        return "sin_datos", "Sin datos de flujo a exchanges (requiere CRYPTOQUANT_API_KEY)"
+    if netflow_neto < 0:
+        return "alcista", f"Salida neta de {abs(netflow_neto):,.0f} {unidad} de exchanges en 7 días"
+    if netflow_neto > 0:
+        return "bajista", f"Entrada neta de {netflow_neto:,.0f} {unidad} a exchanges en 7 días"
+    return "neutral", "Flujo neto a exchanges plano en 7 días"
+
+
 def _divergencia_precio_etf(sig_precio, sig_etf):
     if sig_precio == "alcista" and sig_etf == "bajista":
         return {
@@ -82,23 +91,34 @@ def _divergencia_ili(es_max_30d, ili_score, dias_ventana=30):
     return None
 
 
-def analizar_estado(ticker, flujo_neto_7d_usd_m, funding_pct, ili_score=None, es_max_30d=None):
+def analizar_estado(
+    ticker,
+    flujo_neto_7d_usd_m,
+    funding_pct,
+    ili_score=None,
+    es_max_30d=None,
+    exchange_netflow_neto=None,
+    exchange_netflow_unidad="",
+):
     """Cruza las capas de señal y devuelve un sesgo consolidado.
 
     `ticker` es el dict de binance_client.get_ticker() para el activo elegido.
-    `ili_score` y `es_max_30d` son opcionales (requieren histórico de velas y
-    flujo ETF); si faltan, esa capa queda como "sin_datos" sin romper nada.
+    Todos los parámetros salvo `ticker` son opcionales: si faltan (sin API
+    key, sin ETF para el activo, etc.), esa capa queda como "sin_datos" sin
+    romper nada ni afectar a las demás.
     """
     sig_precio, txt_precio = _signal_precio(ticker["cambio_24h_pct"])
     sig_etf, txt_etf = _signal_etf(flujo_neto_7d_usd_m)
     sig_funding, txt_funding = _signal_funding(funding_pct)
     sig_ili, txt_ili = _signal_ili(ili_score)
+    sig_exchange, txt_exchange = _signal_exchange_netflow(exchange_netflow_neto, exchange_netflow_unidad)
 
     señales = {
         "precio": {"valor": sig_precio, "detalle": txt_precio},
         "etf": {"valor": sig_etf, "detalle": txt_etf},
         "funding": {"valor": sig_funding, "detalle": txt_funding},
         "ili": {"valor": sig_ili, "detalle": txt_ili},
+        "exchange_netflow": {"valor": sig_exchange, "detalle": txt_exchange},
     }
 
     # Divergencia precio vs. ETF: el caso más informativo (spec del proyecto)
@@ -106,7 +126,7 @@ def analizar_estado(ticker, flujo_neto_7d_usd_m, funding_pct, ili_score=None, es
     # Divergencia precio vs. ILI: "nuevo máximo sin liquidez institucional acompañando"
     divergencia_ili = _divergencia_ili(es_max_30d, ili_score)
 
-    señales_votables = (sig_precio, sig_etf, sig_funding, sig_ili)
+    señales_votables = (sig_precio, sig_etf, sig_funding, sig_ili, sig_exchange)
     votos_alcistas = sum(1 for s in señales_votables if s == "alcista")
     votos_bajistas = sum(1 for s in señales_votables if s == "bajista")
 
@@ -126,6 +146,7 @@ def analizar_estado(ticker, flujo_neto_7d_usd_m, funding_pct, ili_score=None, es
         "divergencia_ili": divergencia_ili,
         "flujo_neto_7d_millones_usd": flujo_neto_7d_usd_m,
         "ili_score": ili_score,
+        "exchange_netflow_neto": exchange_netflow_neto,
         "votos_alcistas": votos_alcistas,
         "votos_bajistas": votos_bajistas,
     }
