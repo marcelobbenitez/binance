@@ -19,6 +19,7 @@ compra institucional. Ver README para el detalle de esta limitación.
 """
 
 import os
+import sys
 import time
 
 import requests
@@ -77,7 +78,10 @@ def get_daily_netflow(asset, days=7, force_refresh=False):
 
     try:
         parsed = _fetch(asset, limit=max(days + 2, 10))
-    except Exception:
+    except Exception as e:
+        # Log seguro: str(e) de un HTTPError de `requests` trae URL y status,
+        # nunca la Authorization header, así que no expone la API key.
+        print(f"[exchange_netflow] error al pedir netflow de '{asset}': {e}", file=sys.stderr)
         if entry["data"] is not None:
             return entry["data"][-days:]
         raise
