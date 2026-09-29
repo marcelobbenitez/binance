@@ -92,9 +92,7 @@ Esta capa es opcional y viene **apagada por defecto**. Para activarla:
 
 1. Creá tu propia cuenta en [cryptoquant.com](https://cryptoquant.com) y
    generá una API key desde tu panel (la app y quien la generó no pueden
-   hacer esto por vos: es tu cuenta, tu plan, tu clave). El endpoint de
-   netflow agregado (`exchange=all_exchange`) puede no estar incluido en el
-   plan gratuito — revisá qué cubre tu plan antes de asumir que va a andar.
+   hacer esto por vos: es tu cuenta, tu plan, tu clave).
 2. Configurá la variable de entorno `CRYPTOQUANT_API_KEY` con esa clave:
    - Local: `set CRYPTOQUANT_API_KEY=tu_clave` (PowerShell/cmd) o
      `export CRYPTOQUANT_API_KEY=tu_clave` (bash) antes de correr `python app.py`.
@@ -106,6 +104,20 @@ Esta capa es opcional y viene **apagada por defecto**. Para activarla:
 Sin la variable configurada, `/api/<asset>/exchange-netflow` devuelve
 `{"soportado": false, "razon": "sin_api_key"}` y la señal correspondiente
 queda como "sin_datos" — el resto de la app sigue funcionando igual.
+
+### Nota sobre el exchange consultado
+
+`exchange_netflow.py` pide el netflow de **Binance específicamente**
+(`exchange=binance`), no el agregado de todos los exchanges
+(`exchange=all_exchange`): probamos con el agregado primero y CryptoQuant
+devolvía **403 Forbidden** — su plan no lo cubre (403 significa que la key es
+válida pero el plan no incluye ese endpoint, a diferencia de un 401 por key
+inválida). Un exchange puntual como Binance suele estar disponible en planes
+más bajos, y además encaja con que el resto de la app ya gira en torno a
+datos de Binance. Si tu plan sí cubre `all_exchange`, podés cambiar la
+constante `DEFAULT_EXCHANGE` en `exchange_netflow.py`. Si igual te da 403 con
+`binance`, revisá en tu cuenta de CryptoQuant qué exchanges y qué endpoints
+cubre tu plan.
 
 ## Deploy en Vercel
 

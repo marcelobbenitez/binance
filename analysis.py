@@ -55,10 +55,10 @@ def _signal_exchange_netflow(netflow_neto, unidad):
     if netflow_neto is None:
         return "sin_datos", "Sin datos de flujo a exchanges (requiere CRYPTOQUANT_API_KEY)"
     if netflow_neto < 0:
-        return "alcista", f"Salida neta de {abs(netflow_neto):,.0f} {unidad} de exchanges en 7 días"
+        return "alcista", f"Salida neta de {abs(netflow_neto):,.0f} {unidad} de Binance en 7 días"
     if netflow_neto > 0:
-        return "bajista", f"Entrada neta de {netflow_neto:,.0f} {unidad} a exchanges en 7 días"
-    return "neutral", "Flujo neto a exchanges plano en 7 días"
+        return "bajista", f"Entrada neta de {netflow_neto:,.0f} {unidad} a Binance en 7 días"
+    return "neutral", "Flujo neto a Binance plano en 7 días"
 
 
 def _divergencia_precio_etf(sig_precio, sig_etf):
