@@ -1,9 +1,10 @@
-"""Scraper del flujo diario de los ETF spot de BTC publicado por Farside Investors.
+"""Scraper del flujo diario de ETF spot publicado por Farside Investors.
 
-Farside (https://farside.co.uk/btc/) es la fuente gratuita más completa de
-flujos netos diarios de los ETF spot de BTC en EE.UU. No expone una API, así
-que se parsea la tabla HTML directamente. El resultado se cachea en memoria
-porque Farside solo actualiza estos datos una vez al día (T+1).
+Farside (https://farside.co.uk/<asset>/) es la fuente gratuita más completa
+de flujos netos diarios de los ETF spot en EE.UU., tanto para BTC como para
+ETH. No expone una API, así que se parsea la tabla HTML directamente. El
+resultado se cachea en memoria por activo porque Farside solo actualiza estos
+datos una vez al día (T+1).
 """
 
 import re
@@ -12,12 +13,12 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
-FARSIDE_URL = "https://farside.co.uk/btc/"
+FARSIDE_URL_TEMPLATE = "https://farside.co.uk/{asset}/"
 CACHE_TTL_SECONDS = 6 * 60 * 60  # los datos son T+1: no hace falta refrescar seguido
 
 _DATE_RE = re.compile(r"^\d{1,2} \w{3} \d{4}$")
 
-_cache = {"data": None, "fetched_at": 0.0}
+_cache = {}  # asset -> {"data": [...], "fetched_at": float}
 
 
 def _parse_num(text):
@@ -35,18 +36,18 @@ def _parse_num(text):
     return -value if negative else value
 
 
-def _scrape():
+def _scrape(asset):
     r = requests.get(
-        FARSIDE_URL,
+        FARSIDE_URL_TEMPLATE.format(asset=asset),
         timeout=15,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; BTCMonitor/1.0)"},
+        headers={"User-Agent": "Mozilla/5.0 (compatible; CryptoMonitor/1.0)"},
     )
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
     table = soup.find("table", class_="etf")
     if table is None:
-        raise RuntimeError("No se encontró la tabla de flujos ETF en Farside")
+        raise RuntimeError(f"No se encontró la tabla de flujos ETF en Farside para '{asset}'")
 
     header_rows = table.find("thead").find_all("tr")
     tickers = [th.get_text(strip=True) for th in header_rows[1].find_all("th")][1:]
@@ -72,33 +73,36 @@ def _scrape():
     return rows
 
 
-def get_etf_flows(force_refresh=False):
-    """Devuelve la lista de flujos diarios por ETF, de más antiguo a más reciente.
+def get_etf_flows(asset, force_refresh=False):
+    """Devuelve la lista de flujos diarios por ETF de `asset` ("btc" / "eth"),
+    de más antiguo a más reciente.
 
     Cada elemento: {"fecha": "28 Sep 2026", "IBIT": 54.8, ..., "Total": 31.0}
-    (todos los valores en millones de USD). Usa caché en memoria; si el scrape
-    falla pero hay una copia cacheada, devuelve la copia en vez de romper.
+    (todos los valores en millones de USD). Usa caché en memoria por activo;
+    si el scrape falla pero hay una copia cacheada, devuelve la copia en vez
+    de romper.
     """
+    entry = _cache.setdefault(asset, {"data": None, "fetched_at": 0.0})
     now = time.time()
-    if not force_refresh and _cache["data"] is not None:
-        if now - _cache["fetched_at"] < CACHE_TTL_SECONDS:
-            return _cache["data"]
+    if not force_refresh and entry["data"] is not None:
+        if now - entry["fetched_at"] < CACHE_TTL_SECONDS:
+            return entry["data"]
 
     try:
-        rows = _scrape()
+        rows = _scrape(asset)
     except Exception:
-        if _cache["data"] is not None:
-            return _cache["data"]
+        if entry["data"] is not None:
+            return entry["data"]
         raise
 
-    _cache["data"] = rows
-    _cache["fetched_at"] = now
+    entry["data"] = rows
+    entry["fetched_at"] = now
     return rows
 
 
-def get_net_flow_usd(days=7):
+def get_net_flow_usd(asset, days=7):
     """Suma el flujo neto total (columna 'Total', en millones de USD) de los
-    últimos `days` días con dato publicado."""
-    flows = get_etf_flows()
+    últimos `days` días con dato publicado para `asset`."""
+    flows = get_etf_flows(asset)
     recent = [f for f in flows if f.get("Total") is not None][-days:]
     return sum(f["Total"] for f in recent), recent

@@ -1,9 +1,10 @@
-"""Cruce de señales para estimar sesgo alcista/bajista de BTC.
+"""Cruce de señales para estimar sesgo alcista/bajista de un activo.
 
-No se usa una sola métrica: se cruzan precio spot, flujo neto de ETF (7 días)
-y funding rate de futuros perpetuos. El flujo neto a exchanges (retiros/
-depósitos on-chain) queda fuera porque requiere una API on-chain de pago
-(CryptoQuant/Glassnode); ver README para el detalle de esta limitación.
+Sirve tanto para BTC como para ETH o BNB: no se usa una sola métrica, se
+cruzan precio spot, flujo neto de ETF (7 días, cuando el activo tiene ETF
+spot) y funding rate de futuros perpetuos. El flujo neto a exchanges
+(retiros/depósitos on-chain) queda fuera porque requiere una API on-chain de
+pago (CryptoQuant/Glassnode); ver README para el detalle de esta limitación.
 """
 
 FUNDING_OVERHEATED_PCT = 0.05   # funding > esto: posicionamiento largo excesivo
@@ -38,12 +39,12 @@ def _signal_funding(funding_pct):
     return "alcista", f"Funding positivo y sano ({funding_pct:.4f}%)"
 
 
-def analizar_estado(btc, flujo_neto_7d_usd_m, funding_pct):
+def analizar_estado(ticker, flujo_neto_7d_usd_m, funding_pct):
     """Cruza las tres capas de señal y devuelve un sesgo consolidado.
 
-    `btc` es el dict de binance_client.get_btc_ticker().
+    `ticker` es el dict de binance_client.get_ticker() para el activo elegido.
     """
-    sig_precio, txt_precio = _signal_precio(btc["cambio_24h_pct"])
+    sig_precio, txt_precio = _signal_precio(ticker["cambio_24h_pct"])
     sig_etf, txt_etf = _signal_etf(flujo_neto_7d_usd_m)
     sig_funding, txt_funding = _signal_funding(funding_pct)
 

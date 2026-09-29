@@ -1,4 +1,4 @@
-"""Cliente ligero para los endpoints públicos de Binance usados por BTC Monitor."""
+"""Cliente ligero para los endpoints públicos de Binance usados por Crypto Monitor."""
 
 import requests
 
@@ -6,7 +6,7 @@ SPOT_BASE_URL = "https://data-api.binance.vision"
 FUTURES_BASE_URL = "https://fapi.binance.com"
 
 
-def get_btc_ticker(symbol="BTCUSDT"):
+def get_ticker(symbol="BTCUSDT"):
     """Devuelve el estado actual (24h) del par indicado desde el spot público de Binance."""
     r = requests.get(
         f"{SPOT_BASE_URL}/api/v3/ticker/24hr",
@@ -22,8 +22,8 @@ def get_btc_ticker(symbol="BTCUSDT"):
         "cambio_24h_pct": float(d["priceChangePercent"]),
         "max_24h": float(d["highPrice"]),
         "min_24h": float(d["lowPrice"]),
-        "volumen_btc": float(d["volume"]),
-        "volumen_usdt": float(d["quoteVolume"]),
+        "volumen_base": float(d["volume"]),
+        "volumen_quote": float(d["quoteVolume"]),
     }
 
 

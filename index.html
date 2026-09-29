@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BTC Monitor</title>
+<title>Crypto Monitor</title>
 <style>
   :root {
     --bg: #0a0a0a;
@@ -26,7 +26,22 @@
   }
   .wrap { max-width: 900px; margin: 0 auto; }
   h1 { font-size: 1.4rem; font-weight: 600; margin: 0 0 0.25rem; }
-  .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.5rem; }
+  .subtitle { color: var(--muted); font-size: 0.85rem; margin-bottom: 1.25rem; }
+
+  .tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
+  .tab {
+    padding: 0.5rem 1.1rem;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  .tab.active { background: var(--text); color: #0a0a0a; border-color: var(--text); }
+
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
   @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
   .card {
@@ -97,12 +112,14 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>₿ BTC Monitor</h1>
+  <h1 id="page-title">Crypto Monitor</h1>
   <div class="subtitle">Precio spot (Binance) cruzado con flujo institucional (ETF spot) y funding de futuros</div>
+
+  <div class="tabs" id="tabs"></div>
 
   <div class="grid">
     <div class="card">
-      <h2>BTC/USDT</h2>
+      <h2 id="price-card-title">PRECIO</h2>
       <div class="price" id="price">Cargando…</div>
       <div class="change" id="change"></div>
       <div class="range" id="range"></div>
@@ -120,7 +137,7 @@
     </div>
 
     <div class="card full">
-      <h2>Flujo neto ETF spot BTC — últimos días (Total, USD millones)</h2>
+      <h2 id="etf-card-title">Flujo neto ETF spot — últimos días (Total, USD millones)</h2>
       <div id="chart-wrap">
         <div class="chart" id="chart"></div>
       </div>
@@ -130,13 +147,24 @@
 
   <div class="footnote">
     Fuentes: Binance (<code>data-api.binance.vision</code>, precio y funding) y
-    Farside Investors (<code>farside.co.uk/btc</code>, flujo ETF, dato T+1).
+    Farside Investors (<code>farside.co.uk</code>, flujo ETF, dato T+1, solo para BTC y ETH).
     Esto no es asesoramiento financiero.
   </div>
 </div>
 
 <script>
+const ASSETS = {
+  btc: { symbol: 'BTCUSDT', label: 'BTC' },
+  eth: { symbol: 'ETHUSDT', label: 'ETH' },
+  bnb: { symbol: 'BNBUSDT', label: 'BNB' },
+};
 const REFRESH_MS = 30000;
+let currentAsset = 'btc';
+let refreshTimer = null;
+
+function fmtUSD(n, decimals = 2) {
+  return '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: decimals, maximumFractionDigits: decimals});
+}
 
 async function fetchJSON(url) {
   const r = await fetch(url);
@@ -144,22 +172,37 @@ async function fetchJSON(url) {
   return r.json();
 }
 
-function fmtUSD(n, decimals = 2) {
-  return '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: decimals, maximumFractionDigits: decimals});
+function renderTabs() {
+  const tabsEl = document.getElementById('tabs');
+  tabsEl.innerHTML = Object.entries(ASSETS).map(([id, cfg]) =>
+    `<div class="tab ${id === currentAsset ? 'active' : ''}" data-asset="${id}">${cfg.label}</div>`
+  ).join('');
+  tabsEl.querySelectorAll('.tab').forEach(el => {
+    el.addEventListener('click', () => selectAsset(el.dataset.asset));
+  });
 }
 
-async function loadPrice() {
+function selectAsset(id) {
+  if (id === currentAsset) return;
+  currentAsset = id;
+  renderTabs();
+  document.getElementById('page-title').textContent = `${ASSETS[id].label} Monitor`;
+  refreshAll();
+}
+
+async function loadPrice(asset) {
   const priceEl = document.getElementById('price');
   const changeEl = document.getElementById('change');
   const rangeEl = document.getElementById('range');
+  document.getElementById('price-card-title').textContent = `${ASSETS[asset].symbol}`;
   try {
     let d;
     try {
-      d = await fetchJSON('/api/btc');
+      d = await fetchJSON(`/api/${asset}/price`);
       if (d.error) throw new Error(d.error);
     } catch (backendErr) {
       // Fallback: llamar directo a Binance si el backend Flask no está corriendo
-      const r = await fetch('https://data-api.binance.vision/api/v3/ticker/24hr?symbol=BTCUSDT');
+      const r = await fetch(`https://data-api.binance.vision/api/v3/ticker/24hr?symbol=${ASSETS[asset].symbol}`);
       const raw = await r.json();
       d = {
         precio: parseFloat(raw.lastPrice),
@@ -169,6 +212,7 @@ async function loadPrice() {
       };
     }
     priceEl.textContent = fmtUSD(d.precio);
+    priceEl.classList.remove('error');
     const up = d.cambio_24h_pct >= 0;
     changeEl.textContent = (up ? '▲ ' : '▼ ') + d.cambio_24h_pct.toFixed(2) + '% (24h)';
     changeEl.className = 'change ' + (up ? 'up' : 'down');
@@ -183,14 +227,14 @@ function signalDot(valor) {
   return `<span class="dot ${valor}"></span>`;
 }
 
-async function loadAnalysis() {
+async function loadAnalysis(asset) {
   const badgeWrap = document.getElementById('sesgo-badge');
   const signalsEl = document.getElementById('signals');
   const divCard = document.getElementById('divergencia-card');
   const divText = document.getElementById('divergencia-text');
 
   try {
-    const d = await fetchJSON('/api/analysis');
+    const d = await fetchJSON(`/api/${asset}/analysis`);
     if (d.error) throw new Error(d.error);
 
     const sesgo = d.analisis.sesgo;
@@ -223,12 +267,22 @@ async function loadAnalysis() {
   }
 }
 
-async function loadETFChart() {
+async function loadETFChart(asset) {
   const chart = document.getElementById('chart');
   const note = document.getElementById('etf-note');
+  const title = document.getElementById('etf-card-title');
+  title.textContent = `Flujo neto ETF spot ${ASSETS[asset].label} — últimos días (Total, USD millones)`;
+
   try {
-    const d = await fetchJSON('/api/etf-flows');
+    const d = await fetchJSON(`/api/${asset}/etf-flows`);
     if (d.error) throw new Error(d.error);
+
+    if (d.soportado === false) {
+      chart.innerHTML = '';
+      note.innerHTML = `${ASSETS[asset].label} no tiene ETF spot aprobado en EE.UU., así que esta capa de señal no aplica.`;
+      return;
+    }
+
     const flows = d.flows.filter(f => f.Total !== null && f.Total !== undefined);
     if (!flows.length) throw new Error('sin datos');
 
@@ -246,18 +300,25 @@ async function loadETFChart() {
     note.textContent = 'Dato T+1 (se publica con el cierre del día hábil anterior en EE.UU.)';
   } catch (e) {
     chart.innerHTML = '';
-    note.innerHTML = '<span class="error">No se pudo cargar el flujo ETF. Iniciá el backend con <code>python app.py</code>.</span>';
+    note.innerHTML = `<span class="error">No se pudo cargar el flujo ETF. Iniciá el backend con <code>python app.py</code>.</span>`;
   }
 }
 
 function refreshAll() {
-  loadPrice();
-  loadAnalysis();
-  loadETFChart();
+  const asset = currentAsset;
+  loadPrice(asset);
+  loadAnalysis(asset);
+  loadETFChart(asset);
 }
 
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(refreshAll, REFRESH_MS);
+}
+
+renderTabs();
 refreshAll();
-setInterval(refreshAll, REFRESH_MS);
+startAutoRefresh();
 </script>
 </body>
 </html>
