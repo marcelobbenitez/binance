@@ -14,10 +14,12 @@ import sys
 import binance_client
 import etf_flows
 import ili
+import volatility
 from analysis import analizar_estado
 from assets_config import ASSETS
 
 ILI_WINDOW_DAYS = 30
+VOL_HORIZONS_DAYS = (7, 30)
 
 # En Windows la consola suele usar cp1252, que no puede codificar el símbolo
 # de advertencia usado más abajo; forzamos UTF-8 para evitar un crash.
@@ -56,9 +58,9 @@ def analizar_activo(asset, cfg):
         except Exception as e:
             print(f"\nETF flows: no se pudo obtener ({e})")
 
-    es_max_30d = None
+    velas, es_max_30d = [], None
     try:
-        velas = binance_client.get_klines(cfg["symbol"], interval="1d", limit=ILI_WINDOW_DAYS)
+        velas = binance_client.get_klines(cfg["symbol"], interval="1d", limit=90)
         es_max_30d = ili.es_maximo_de_n_dias(ticker["precio"], velas, dias=ILI_WINDOW_DAYS)
     except Exception:
         pass
@@ -72,6 +74,21 @@ def analizar_activo(asset, cfg):
         print(f"\n   ⚠ {estado['divergencia']['nota']}")
     if estado["divergencia_ili"]:
         print(f"\n   ⚠ {estado['divergencia_ili']['nota']}")
+
+    vol_pct = volatility.get_implied_vol_pct(cfg["symbol"])
+    fuente = "implícita, Deribit"
+    if vol_pct is None:
+        vol_pct = volatility.get_realized_vol_pct(velas, days=30) if velas else None
+        fuente = "histórica realizada 30d"
+
+    if vol_pct is not None:
+        print(f"\nRango de movimiento esperado (volatilidad anual {vol_pct:.1f}%, {fuente}):")
+        for dias in VOL_HORIZONS_DAYS:
+            mov = volatility.expected_move(ticker["precio"], vol_pct, dias)
+            print(f"   {dias}d (±1 desvío, ~68%): ${mov['precio_min']:,.0f} — ${mov['precio_max']:,.0f} (±{mov['pct']:.1f}%)")
+        print("   (rango estadístico, no una predicción de precio ni de dirección)")
+    else:
+        print("\nRango de movimiento esperado: sin datos de volatilidad disponibles")
     print()
 
 

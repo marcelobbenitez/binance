@@ -14,11 +14,13 @@ from flask import Flask, abort, jsonify, send_from_directory
 import binance_client
 import etf_flows
 import ili
+import volatility
 from analysis import analizar_estado
 from assets_config import ASSETS
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ILI_WINDOW_DAYS = 30  # ventana para el chequeo de "nuevo máximo de N días" del ILI
+VOL_HORIZONS_DAYS = (7, 30)  # plazos para el rango de movimiento esperado
 
 app = Flask(__name__, static_folder=None)
 
@@ -93,9 +95,9 @@ def api_analysis(asset):
         except Exception:
             pass
 
-    es_max_30d = None
+    velas, es_max_30d = [], None
     try:
-        velas = binance_client.get_klines(cfg["symbol"], interval="1d", limit=ILI_WINDOW_DAYS)
+        velas = binance_client.get_klines(cfg["symbol"], interval="1d", limit=90)
         es_max_30d = ili.es_maximo_de_n_dias(ticker["precio"], velas, dias=ILI_WINDOW_DAYS)
     except Exception:
         pass
@@ -103,6 +105,23 @@ def api_analysis(asset):
     ili_score = ili.compute_score(flujo_7d, len(recientes), stats)
 
     estado = analizar_estado(ticker, flujo_7d, funding, ili_score=ili_score, es_max_30d=es_max_30d)
+
+    vol_pct = volatility.get_implied_vol_pct(cfg["symbol"])
+    vol_fuente = "implicita_deribit"
+    if vol_pct is None:
+        vol_pct = volatility.get_realized_vol_pct(velas, days=30) if velas else None
+        vol_fuente = "historica_realizada_30d"
+
+    movimiento_esperado = None
+    if vol_pct is not None:
+        movimiento_esperado = {
+            "volatilidad_anual_pct": vol_pct,
+            "fuente": vol_fuente,
+            "horizontes": {
+                f"{dias}d": volatility.expected_move(ticker["precio"], vol_pct, dias)
+                for dias in VOL_HORIZONS_DAYS
+            },
+        }
 
     return jsonify({
         "asset": asset,
@@ -113,8 +132,10 @@ def api_analysis(asset):
         "etf_flujo_7d_dias_con_dato": [r["fecha"] for r in recientes],
         "es_maximo_30d": es_max_30d,
         "analisis": estado,
+        "movimiento_esperado": movimiento_esperado,
         "nota_etf": "Los flujos de ETF son T+1 (Farside los publica con el cierre del día anterior en EE.UU.)",
         "nota_ili": "ILI simplificado: normaliza el flujo ETF contra su propio rango histórico; no incluye liquidez USD agregada (ver README).",
+        "nota_movimiento": "Rango estadístico de volatilidad (±1 desvío, ~68% bajo supuesto lognormal), no una predicción de precio ni de dirección.",
     })
 
 

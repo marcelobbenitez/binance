@@ -116,6 +116,14 @@
 
   .candles { width: 100%; height: 280px; margin-top: 0.5rem; }
 
+  .vol-source { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.8rem; }
+  .vol-row { margin-bottom: 0.9rem; }
+  .vol-row:last-child { margin-bottom: 0; }
+  .vol-row .vol-label { font-size: 0.8rem; color: var(--muted); margin-bottom: 0.3rem; }
+  .vol-row .vol-range { font-size: 1.05rem; font-weight: 600; }
+  .vol-bar { position: relative; height: 6px; border-radius: 3px; background: #262626; margin-top: 0.5rem; }
+  .vol-bar .vol-marker { position: absolute; top: -3px; width: 2px; height: 12px; background: var(--text); }
+
   .muted { color: var(--muted); font-size: 0.85rem; }
   .error { color: var(--down); font-size: 0.85rem; }
   .footnote { margin-top: 2rem; color: var(--muted); font-size: 0.75rem; line-height: 1.5; }
@@ -152,6 +160,11 @@
     </div>
 
     <div class="card full">
+      <h2>Rango de movimiento esperado (no es una predicción de precio)</h2>
+      <div id="movimiento-content" class="muted">Cargando…</div>
+    </div>
+
+    <div class="card full">
       <h2>Gráfico de velas (1D)</h2>
       <div class="candles" id="candles"></div>
     </div>
@@ -168,10 +181,12 @@
 
   <div class="footnote">
     Fuentes: Binance (<code>data-api.binance.vision</code> REST + <code>data-stream.binance.vision</code> WebSocket
-    para precio y velas en vivo, <code>fapi.binance.com</code> para funding) y Farside Investors
-    (<code>farside.co.uk</code>, flujo ETF, dato T+1, solo para BTC y ETH). El ILI es una versión simplificada
-    que normaliza el flujo ETF contra su propio rango histórico (no incluye liquidez USD agregada). Gráfico de
-    velas con <code>lightweight-charts</code> (TradingView). Esto no es asesoramiento financiero.
+    para precio y velas en vivo, <code>fapi.binance.com</code> para funding), Farside Investors
+    (<code>farside.co.uk</code>, flujo ETF, dato T+1, solo para BTC y ETH) y Deribit (<code>deribit.com</code>,
+    índice DVOL de volatilidad implícita para el rango de movimiento esperado, solo BTC y ETH). El ILI es una
+    versión simplificada que normaliza el flujo ETF contra su propio rango histórico (no incluye liquidez USD
+    agregada). Gráfico de velas con <code>lightweight-charts</code> (TradingView). Esto no es asesoramiento
+    financiero ni una predicción de precio.
   </div>
 </div>
 
@@ -442,12 +457,46 @@ async function loadAnalysis(asset) {
     `;
 
     renderDivergencias(d.analisis);
+    renderMovimiento(asset, d.movimiento_esperado);
   } catch (e) {
     if (asset !== currentAsset) return;
     badgeWrap.innerHTML = '<span class="badge NEUTRAL">Backend no disponible</span>';
     signalsEl.innerHTML = '<div class="error">Iniciá el backend con <code>python app.py</code> para ver el sesgo alcista/bajista, el ILI y el flujo ETF.</div>';
     document.getElementById('divergencia-card').style.display = 'none';
+    document.getElementById('movimiento-content').innerHTML = '<span class="error">Iniciá el backend con <code>python app.py</code> para ver el rango de movimiento esperado.</span>';
   }
+}
+
+function renderMovimiento(asset, mov) {
+  const el = document.getElementById('movimiento-content');
+  if (!mov) {
+    el.innerHTML = 'Sin datos de volatilidad disponibles para este activo en este momento.';
+    return;
+  }
+  const fuenteLabel = mov.fuente === 'implicita_deribit'
+    ? 'Volatilidad implícita (Deribit, mercado de opciones)'
+    : 'Volatilidad histórica realizada (últimos 30 días) — Deribit no cubre este activo o no respondió';
+
+  const ordenHorizontes = ['7d', '30d'];
+  const entradas = Object.entries(mov.horizontes).sort(
+    (a, b) => ordenHorizontes.indexOf(a[0]) - ordenHorizontes.indexOf(b[0])
+  );
+  const filas = entradas.map(([horizonte, h]) => `
+    <div class="vol-row">
+      <div class="vol-label">Próximos ${horizonte.replace('d',' días')} (±1 desvío, ~68%)</div>
+      <div class="vol-range">${fmtUSD(h.precio_min, 0)} — ${fmtUSD(h.precio_max, 0)} <span class="muted">(±${h.pct.toFixed(1)}%)</span></div>
+    </div>
+  `).join('');
+
+  el.innerHTML = `
+    <div class="vol-source">${fuenteLabel} · volatilidad anualizada: ${mov.volatilidad_anual_pct.toFixed(1)}%</div>
+    ${filas}
+    <div class="muted" style="margin-top:0.9rem">
+      Esto es un rango estadístico de cuánto suele moverse el precio, no una predicción de precio ni de dirección.
+      En cripto, con distribuciones de cola más pesada que una normal, la probabilidad real de quedar dentro del
+      rango suele ser algo menor al ~68% teórico. Combinalo con el sesgo de arriba para tener dirección + magnitud.
+    </div>
+  `;
 }
 
 async function loadETFChart(asset) {

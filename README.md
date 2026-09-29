@@ -4,7 +4,8 @@ App para monitorear el estado de BTC, ETH y BNB en tiempo real usando datos
 públicos de Binance, cruzados con el flujo institucional de los ETF spot
 (cuando el activo tiene), el funding rate de futuros y un Índice de Liquidez
 Institucional (ILI), para estimar si cada uno está en sesgo alcista o
-bajista.
+bajista — y además, por separado, un rango estadístico de cuánto suele
+moverse el precio en 7 y 30 días (volatilidad, no una predicción de precio).
 
 ## Qué muestra
 
@@ -22,6 +23,11 @@ bajista.
 - Un sesgo consolidado (**ALCISTA** / **BAJISTA** / **NEUTRAL** /
   **DIVERGENCIA**) que cruza las señales anteriores, en vez de mirar
   solo el precio.
+- **Rango de movimiento esperado** a 7 y 30 días, basado en volatilidad
+  implícita de opciones (Deribit, BTC/ETH) o volatilidad histórica realizada
+  como fallback (BNB). Es una magnitud estadística de "cuánto suele moverse
+  el precio", independiente y complementaria al sesgo — no una predicción de
+  precio ni de dirección (ver más abajo).
 
 ## Estructura
 
@@ -32,6 +38,7 @@ btc-monitor/
 ├── binance_client.py   # Cliente de los endpoints públicos de Binance (ticker, funding, velas)
 ├── etf_flows.py        # Scraper + caché del flujo ETF (Farside), por activo
 ├── ili.py              # Índice de Liquidez Institucional (score + chequeo de máximo de N días)
+├── volatility.py       # Rango de movimiento esperado (volatilidad implícita/histórica)
 ├── analysis.py         # Lógica de cruce de señales (sesgo alcista/bajista)
 ├── btc_monitor.py       # Versión CLI (recorre BTC/ETH/BNB con los mismos módulos)
 ├── index.html           # Frontend (SPA de un solo archivo: tabs, WebSocket, velas)
@@ -112,6 +119,9 @@ O conectando el repo de GitHub desde el dashboard de Vercel para que cada
   BNB no tiene equivalente.
 - **Gráfico de velas**: `lightweight-charts` de TradingView, vía CDN
   (`unpkg.com`), gratuito y open-source.
+- **Volatilidad implícita**: `https://www.deribit.com/api/v2/public/get_volatility_index_data`
+  (índice DVOL, público, sin API key), solo BTC y ETH. BNB (y cualquier falla
+  de Deribit) usa volatilidad histórica calculada de las velas de Binance.
 
 ## Cómo se calcula el sesgo
 
@@ -166,6 +176,40 @@ un ATH real necesitaría mucho más historial de velas del que tiene sentido
 pedir en cada refresco. Queda documentado como aproximación, no como el
 criterio exacto del resumen.
 
+### Rango de movimiento esperado: magnitud, no dirección
+
+El sesgo (ALCISTA/BAJISTA/etc.) responde *hacia dónde* podría inclinarse el
+mercado. Es una pregunta distinta a *cuánto* suele moverse el precio en
+cierto plazo — para eso, `volatility.py` calcula un rango estadístico
+independiente, simétrico alrededor del precio actual:
+
+```
+movimiento_horizonte = precio × (volatilidad_anual / 100) × sqrt(dias / 365)
+rango = [precio − movimiento_horizonte, precio + movimiento_horizonte]
+```
+
+La volatilidad usada es, en orden de preferencia:
+
+1. **Implícita** (BTC/ETH): el índice DVOL de Deribit, que resume lo que el
+   propio mercado de opciones está pagando por cobertura — a diferencia de
+   mirar el pasado, esto es una expectativa *hacia adelante* real del
+   mercado, la referencia más legítima que existe para este propósito.
+2. **Histórica realizada** (BNB, o si Deribit falla): desvío estándar de los
+   retornos diarios logarítmicos de los últimos 30 días de velas de Binance,
+   anualizado. Es un fallback más débil porque describe el pasado, no lo que
+   el mercado espera.
+
+El rango es de **±1 desvío estándar**, que bajo el supuesto (aproximado, es
+el estándar en pricing de opciones) de retornos lognormales correspondería a
+~68% de probabilidad de que el precio quede dentro. En la práctica, los
+retornos de cripto tienen colas más pesadas que una distribución normal
+(movimientos extremos más frecuentes de lo que esa aproximación predice), así
+que la probabilidad real de quedar dentro del rango suele ser algo menor a
+ese 68% teórico. Por eso se presenta como "rango típico de movimiento", no
+como un límite garantizado ni como un precio objetivo — combinado con el
+sesgo da dirección + magnitud, pero sigue sin ser una predicción puntual de
+precio ni de fecha.
+
 ### Por qué no se incluye el flujo neto a exchanges (retiros/depósitos)
 
 Es una de las señales del análisis original. Se llegó a implementar vía
@@ -192,6 +236,11 @@ mismo patrón que `etf_flows.py`: un módulo propio, cacheado, que se conecta a
   EE.UU. en Vercel); la app lo maneja como "sin datos" en vez de romper.
 - BNB no tiene flujo ETF ni ILI: el sesgo para ese activo se basa solo en
   precio y funding.
+- El rango de movimiento esperado asume (aproximadamente) retornos
+  lognormales; en cripto la probabilidad real de quedar dentro del rango
+  suele ser algo menor al ~68% teórico por las colas más pesadas que una
+  normal. No es una predicción de precio ni de fecha, es una referencia de
+  magnitud típica de movimiento.
 - El WebSocket puede no conectar en redes muy restrictivas; la app cae de
   vuelta a polling REST cada 30s mientras tanto y reintenta la conexión con
   backoff exponencial.
