@@ -10,10 +10,15 @@ https://cryptoquant.com y la configurás como variable de entorno (local o en
 el hosting), nunca hardcodeada en el código.
 
 Se consulta el netflow de un exchange puntual (`DEFAULT_EXCHANGE`, por
-defecto "binance") en vez del agregado "all_exchange": este último devuelve
-403 Forbidden en planes que no son Enterprise (probado en producción), y un
-403 de CryptoQuant significa key válida pero plan sin acceso a ese endpoint,
-no una key inválida.
+defecto "binance") en vez del agregado "all_exchange". En pruebas contra
+producción, ambas variantes (`all_exchange` y `binance`) devolvieron 403
+Forbidden con la misma API key — un 403 de CryptoQuant significa key válida
+pero plan sin acceso a ese endpoint (a diferencia de un 401 por key
+inválida), así que el problema parece ser el endpoint `exchange-flows/netflow`
+en general para ese plan, no el parámetro `exchange` elegido. Se dejó
+"binance" como default porque encaja temáticamente con el resto de la app
+(que ya gira en torno a datos de Binance), no porque se haya confirmado que
+evita el 403.
 
 Netflow positivo = entra más al exchange de lo que sale (presión de venta
 potencial). Netflow negativo = sale más de lo que entra (acumulación /

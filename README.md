@@ -105,19 +105,22 @@ Sin la variable configurada, `/api/<asset>/exchange-netflow` devuelve
 `{"soportado": false, "razon": "sin_api_key"}` y la señal correspondiente
 queda como "sin_datos" — el resto de la app sigue funcionando igual.
 
-### Nota sobre el exchange consultado
+### Estado conocido: 403 Forbidden con el plan actual
 
-`exchange_netflow.py` pide el netflow de **Binance específicamente**
-(`exchange=binance`), no el agregado de todos los exchanges
-(`exchange=all_exchange`): probamos con el agregado primero y CryptoQuant
-devolvía **403 Forbidden** — su plan no lo cubre (403 significa que la key es
-válida pero el plan no incluye ese endpoint, a diferencia de un 401 por key
-inválida). Un exchange puntual como Binance suele estar disponible en planes
-más bajos, y además encaja con que el resto de la app ya gira en torno a
-datos de Binance. Si tu plan sí cubre `all_exchange`, podés cambiar la
-constante `DEFAULT_EXCHANGE` en `exchange_netflow.py`. Si igual te da 403 con
-`binance`, revisá en tu cuenta de CryptoQuant qué exchanges y qué endpoints
-cubre tu plan.
+En pruebas contra producción, `exchange-flows/netflow` devolvió **403
+Forbidden** tanto con `exchange=all_exchange` como con `exchange=binance`,
+usando la misma API key. Un 403 de CryptoQuant significa key válida pero
+plan sin acceso a ese endpoint (a diferencia de un 401 por key inválida), y
+que falle igual con un exchange puntual sugiere que es el endpoint
+`exchange-flows/netflow` en general el que no está incluido en el plan
+actual, no una cuestión del parámetro `exchange` elegido.
+
+`exchange_netflow.py` deja `DEFAULT_EXCHANGE = "binance"` igual (encaja
+temáticamente con el resto de la app, que ya gira en torno a datos de
+Binance), pero eso no soluciona el 403. Para activar esta señal de verdad
+hace falta confirmar en tu cuenta de CryptoQuant qué plan tenés y si incluye
+`exchange-flows/netflow`; mientras tanto la app funciona igual con esta capa
+en "sin_datos".
 
 ## Deploy en Vercel
 
