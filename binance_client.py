@@ -52,6 +52,37 @@ def get_klines(symbol="BTCUSDT", interval="1d", limit=90):
     ]
 
 
+def get_historical_funding(symbol, start_ms, end_ms):
+    """Devuelve el historial de funding rate (cada 8h) entre `start_ms` y
+    `end_ms` (timestamps en milisegundos), paginando de a 1000 registros (el
+    máximo por request, ~333 días a razón de 3 pagos por día). Se usa para
+    backtest.py, no para el estado en vivo (para eso está get_funding_rate).
+
+    Puede fallar por geo-bloqueo de fapi.binance.com en algunas regiones; el
+    llamador debe tratar una lista vacía como "sin datos", no como error.
+    """
+    resultados = []
+    cursor = start_ms
+    while cursor < end_ms:
+        r = requests.get(
+            f"{FUTURES_BASE_URL}/fapi/v1/fundingRate",
+            params={"symbol": symbol, "startTime": cursor, "endTime": end_ms, "limit": 1000},
+            timeout=15,
+        )
+        r.raise_for_status()
+        lote = r.json()
+        if not lote:
+            break
+        resultados.extend(lote)
+        ultimo = lote[-1]["fundingTime"]
+        if ultimo <= cursor:
+            break
+        cursor = ultimo + 1
+        if len(lote) < 1000:
+            break
+    return resultados
+
+
 def get_funding_rate(symbol="BTCUSDT"):
     """Devuelve el funding rate vigente de futuros perpetuos, en porcentaje.
 

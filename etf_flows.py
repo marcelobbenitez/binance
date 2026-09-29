@@ -9,6 +9,10 @@ datos una vez al día (T+1).
 Además de los flujos diarios, la misma tabla trae filas de resumen
 (Average/Maximum/Minimum del flujo diario total histórico) que se usan como
 rango de referencia para el Índice de Liquidez Institucional (ver ili.py).
+
+La página normal (`/btc/`, `/eth/`) solo muestra los últimos ~14 días. Para
+backtesting (ver backtest.py) hace falta el histórico completo, que vive en
+una URL separada (`get_full_history`).
 """
 
 import re
@@ -18,12 +22,18 @@ import requests
 from bs4 import BeautifulSoup
 
 FARSIDE_URL_TEMPLATE = "https://farside.co.uk/{asset}/"
+FULL_HISTORY_URL = {
+    "btc": "https://farside.co.uk/bitcoin-etf-flow-all-data/",
+    "eth": "https://farside.co.uk/ethereum-etf-flow-all-data/",
+}
 CACHE_TTL_SECONDS = 6 * 60 * 60  # los datos son T+1: no hace falta refrescar seguido
+FULL_HISTORY_CACHE_TTL_SECONDS = 24 * 60 * 60  # histórico completo: alcanza con 1 vez al día
 
 _DATE_RE = re.compile(r"^\d{1,2} \w{3} \d{4}$")
 _STATS_LABELS = {"average", "maximum", "minimum"}
 
 _cache = {}  # asset -> {"rows": [...], "stats": {...}, "fetched_at": float}
+_full_history_cache = {}  # asset -> {"rows": [...], "fetched_at": float}
 
 
 def _parse_num(text):
@@ -41,10 +51,10 @@ def _parse_num(text):
     return -value if negative else value
 
 
-def _scrape(asset):
+def _scrape_url(url):
     r = requests.get(
-        FARSIDE_URL_TEMPLATE.format(asset=asset),
-        timeout=15,
+        url,
+        timeout=20,
         headers={"User-Agent": "Mozilla/5.0 (compatible; CryptoMonitor/1.0)"},
     )
     r.raise_for_status()
@@ -52,12 +62,23 @@ def _scrape(asset):
 
     table = soup.find("table", class_="etf")
     if table is None:
-        raise RuntimeError(f"No se encontró la tabla de flujos ETF en Farside para '{asset}'")
+        raise RuntimeError(f"No se encontró la tabla de flujos ETF en {url}")
 
+    # La página normal (últimos ~14 días) tiene 3 filas de encabezado (íconos,
+    # nombres de ticker, fees en %); la página de histórico completo tiene 1
+    # sola fila con los nombres ya completos (incluido "Total"). En vez de
+    # asumir una posición fija, elegimos la fila con más celdas que parezcan
+    # nombres de verdad (no vacías, no un porcentaje de fee).
     header_rows = table.find("thead").find_all("tr")
-    tickers = [th.get_text(strip=True) for th in header_rows[1].find_all("th")][1:]
+
+    def _fila_de_nombres(tr):
+        celdas = [th.get_text(strip=True) for th in tr.find_all("th")][1:]
+        return celdas, sum(1 for c in celdas if c and not re.match(r"^\d+(\.\d+)?%$", c))
+
+    candidatos = [_fila_de_nombres(tr) for tr in header_rows]
+    tickers, _ = max(candidatos, key=lambda c: c[1])
     if tickers and tickers[-1] == "":
-        # el nombre de la última columna ("Total") solo aparece en la 1ra fila de encabezado
+        # el nombre de la última columna ("Total") solo aparece en la fila de íconos
         tickers[-1] = "Total"
 
     rows = []
@@ -82,7 +103,8 @@ def _scrape(asset):
 
 def get_etf_flows(asset, force_refresh=False):
     """Devuelve la lista de flujos diarios por ETF de `asset` ("btc" / "eth"),
-    de más antiguo a más reciente.
+    de más antiguo a más reciente (últimos ~14 días que muestra la página
+    normal de Farside).
 
     Cada elemento: {"fecha": "28 Sep 2026", "IBIT": 54.8, ..., "Total": 31.0}
     (todos los valores en millones de USD). Usa caché en memoria por activo;
@@ -106,7 +128,7 @@ def _get_cached(asset, force_refresh=False):
             return entry
 
     try:
-        rows, stats = _scrape(asset)
+        rows, stats = _scrape_url(FARSIDE_URL_TEMPLATE.format(asset=asset))
     except Exception:
         if entry["rows"] is not None:
             return entry
@@ -116,6 +138,34 @@ def _get_cached(asset, force_refresh=False):
     entry["stats"] = stats
     entry["fetched_at"] = now
     return entry
+
+
+def get_full_history(asset, force_refresh=False):
+    """Devuelve el histórico COMPLETO de flujos diarios de `asset` ("btc" /
+    "eth", los únicos con página de histórico completo en Farside), desde el
+    lanzamiento del ETF hasta hoy. Se usa para backtest.py; no se pide en
+    cada request porque son ~700 filas y Farside solo actualiza 1 vez al día.
+    """
+    url = FULL_HISTORY_URL.get(asset)
+    if url is None:
+        return []
+
+    entry = _full_history_cache.setdefault(asset, {"rows": None, "fetched_at": 0.0})
+    now = time.time()
+    if not force_refresh and entry["rows"] is not None:
+        if now - entry["fetched_at"] < FULL_HISTORY_CACHE_TTL_SECONDS:
+            return entry["rows"]
+
+    try:
+        rows, _ = _scrape_url(url)
+    except Exception:
+        if entry["rows"] is not None:
+            return entry["rows"]
+        raise
+
+    entry["rows"] = rows
+    entry["fetched_at"] = now
+    return rows
 
 
 def get_net_flow_usd(asset, days=7):

@@ -11,6 +11,7 @@ import os
 
 from flask import Flask, abort, jsonify, send_from_directory
 
+import backtest
 import binance_client
 import etf_flows
 import ili
@@ -72,6 +73,16 @@ def api_klines(asset):
     interval = "1d"
     try:
         return jsonify({"interval": interval, "velas": binance_client.get_klines(cfg["symbol"], interval=interval, limit=90)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.get("/api/<asset>/backtest")
+def api_backtest(asset):
+    cfg = _asset_config(asset)
+    try:
+        resultado = backtest.get_backtest(asset, cfg["symbol"], cfg["farside_slug"])
+        return jsonify(resultado)
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 

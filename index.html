@@ -166,6 +166,11 @@
     </div>
 
     <div class="card full">
+      <h2>Probabilidad histórica del sesgo actual (backtesting)</h2>
+      <div id="backtest-content" class="muted">Calculando… (puede tardar unos segundos la primera vez)</div>
+    </div>
+
+    <div class="card full">
       <h2>Gráfico de velas (1D)</h2>
       <div class="candles" id="candles"></div>
     </div>
@@ -186,8 +191,9 @@
     (<code>farside.co.uk</code>, flujo ETF, dato T+1, solo para BTC y ETH) y Deribit (<code>deribit.com</code>,
     índice DVOL de volatilidad implícita para el rango de movimiento esperado, solo BTC y ETH). El ILI es una
     versión simplificada que normaliza el flujo ETF contra su propio rango histórico (no incluye liquidez USD
-    agregada). Gráfico de velas con <code>lightweight-charts</code> (TradingView). Esto no es asesoramiento
-    financiero ni una predicción de precio.
+    agregada). El backtesting usa el histórico completo de Farside (desde el lanzamiento de cada ETF) y el
+    historial de funding rate de Binance para calcular frecuencias reales, no predicciones. Gráfico de velas con
+    <code>lightweight-charts</code> (TradingView). Esto no es asesoramiento financiero ni una predicción de precio.
   </div>
 </div>
 
@@ -211,6 +217,16 @@ let wsReconnectDelay = 1000;
 let chart = null;
 let chartSeries = null;
 const candlesByAsset = { btc: null, eth: null, bnb: null };
+const backtestByAsset = { btc: null, eth: null, bnb: null }; // null = no pedido, 'error' = falló, obj = resultado
+const sesgoActualByAsset = { btc: null, eth: null, bnb: null };
+
+const SESGO_LABELS = {
+  ALCISTA: 'ALCISTA',
+  BAJISTA: 'BAJISTA',
+  NEUTRAL: 'NEUTRAL',
+  DIVERGENCIA_AMARILLA: 'DIVERGENCIA (cautela)',
+  DIVERGENCIA_VERDE: 'DIVERGENCIA (acumulación)',
+};
 
 function fmtUSD(n, decimals = 2) {
   return '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: decimals, maximumFractionDigits: decimals});
@@ -241,6 +257,7 @@ function selectAsset(id) {
   loadAnalysis(id);
   loadETFChart(id);
   loadCandles(id);
+  loadBacktest(id);
 }
 
 // ---------- Precio: WebSocket en vivo con fallback REST ----------
@@ -440,14 +457,8 @@ async function loadAnalysis(asset) {
     if (asset !== currentAsset) return;
 
     const sesgo = d.analisis.sesgo;
-    const labelMap = {
-      ALCISTA: 'ALCISTA',
-      BAJISTA: 'BAJISTA',
-      NEUTRAL: 'NEUTRAL',
-      DIVERGENCIA_AMARILLA: 'DIVERGENCIA (cautela)',
-      DIVERGENCIA_VERDE: 'DIVERGENCIA (acumulación)',
-    };
-    badgeWrap.innerHTML = `<span class="badge ${sesgo}">${labelMap[sesgo] || sesgo}</span>`;
+    sesgoActualByAsset[asset] = sesgo;
+    badgeWrap.innerHTML = `<span class="badge ${sesgo}">${SESGO_LABELS[sesgo] || sesgo}</span>`;
 
     const s = d.analisis.señales;
     signalsEl.innerHTML = `
@@ -459,6 +470,7 @@ async function loadAnalysis(asset) {
 
     renderDivergencias(d.analisis);
     renderMovimiento(asset, d.movimiento_esperado);
+    renderBacktest(asset);
   } catch (e) {
     if (asset !== currentAsset) return;
     badgeWrap.innerHTML = '<span class="badge NEUTRAL">Backend no disponible</span>';
@@ -501,6 +513,82 @@ function renderMovimiento(asset, mov) {
       Esto es un rango estadístico de cuánto suele moverse el precio, no una predicción de precio ni de dirección.
       En cripto, con distribuciones de cola más pesada que una normal, la probabilidad real de quedar dentro del
       rango suele ser algo menor al ~68% teórico. Combinalo con el sesgo de arriba para tener dirección + magnitud.
+    </div>
+  `;
+}
+
+// ---------- Backtesting: frecuencia histórica del sesgo actual ----------
+
+async function loadBacktest(asset) {
+  if (backtestByAsset[asset]) {
+    renderBacktest(asset);
+    return;
+  }
+  try {
+    const d = await fetchJSON(`/api/${asset}/backtest`);
+    if (d.error) throw new Error(d.error);
+    backtestByAsset[asset] = d;
+  } catch (e) {
+    backtestByAsset[asset] = 'error';
+  }
+  renderBacktest(asset);
+}
+
+function renderBacktest(asset) {
+  if (asset !== currentAsset) return;
+  const el = document.getElementById('backtest-content');
+  const bt = backtestByAsset[asset];
+  const sesgo = sesgoActualByAsset[asset];
+
+  if (bt === 'error') {
+    el.innerHTML = '<span class="error">No se pudo calcular el backtest.</span>';
+    return;
+  }
+  if (!bt) {
+    el.innerHTML = 'Calculando… (puede tardar unos segundos la primera vez)';
+    return;
+  }
+  if (!sesgo) {
+    el.innerHTML = 'Esperando el sesgo actual…';
+    return;
+  }
+
+  const datos = bt.por_sesgo[sesgo];
+  const sesgoLabel = SESGO_LABELS[sesgo] || sesgo;
+  const rangoMuestra = `${bt.desde} a ${bt.hasta}`;
+
+  if (!datos) {
+    el.innerHTML = `
+      <div class="muted">No hubo casos históricos de sesgo <b>${sesgoLabel}</b> en la muestra (${rangoMuestra}).</div>
+    `;
+    return;
+  }
+
+  const orden = ['7d', '14d', '30d'];
+  const filas = orden.filter(h => datos[h]).map(h => {
+    const d = datos[h];
+    const pctSube = Math.round(d.prob_subida * 100);
+    const pctBaja = 100 - pctSube;
+    const avisoMuestra = d.n < 30 ? ' · <span class="vol-down">muestra chica, tomalo con pinzas</span>' : '';
+    return `
+      <div class="vol-row">
+        <div class="vol-label">A ${h.replace('d', ' días')} (N=${d.n})${avisoMuestra}</div>
+        <div class="vol-range">
+          <span class="vol-up">▲ ${pctSube}% subió</span>
+          <span class="vol-sep">·</span>
+          <span class="vol-down">▼ ${pctBaja}% bajó</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="vol-source">Cuando el sesgo fue <b>${sesgoLabel}</b> en el pasado (muestra: ${rangoMuestra}):</div>
+    ${filas}
+    <div class="muted" style="margin-top:0.9rem">
+      Frecuencia histórica real, no una predicción. Las ventanas de retorno se solapan día a día (no son muestras
+      estadísticamente independientes) y que un patrón se haya repetido antes no garantiza que se repita —
+      especialmente con muestras chicas.
     </div>
   `;
 }
@@ -560,6 +648,7 @@ loadPriceRest(currentAsset);
 loadAnalysis(currentAsset);
 loadETFChart(currentAsset);
 loadCandles(currentAsset);
+loadBacktest(currentAsset);
 connectWebSocket();
 startAnalysisRefresh();
 </script>

@@ -4,9 +4,10 @@ App para monitorear el estado de BTC, ETH y BNB en tiempo real usando datos
 públicos de Binance, cruzados con el flujo institucional de los ETF spot
 (cuando el activo tiene), el funding rate de futuros y un Índice de Liquidez
 Institucional (ILI), para estimar si cada uno está en sesgo alcista o
-bajista — y además, por separado, un rango estadístico de cuánto suele
-moverse el precio en 7, 14 y 30 días (volatilidad, no una predicción de
-precio).
+bajista, un rango estadístico de cuánto suele moverse el precio en 7, 14 y
+30 días (volatilidad, no una predicción de precio), y un **backtesting**
+que muestra qué porcentaje de las veces subió o bajó el precio, en el
+pasado, cuando el mercado tuvo el mismo sesgo que tiene ahora.
 
 ## Qué muestra
 
@@ -29,6 +30,11 @@ precio).
   como fallback (BNB). Es una magnitud estadística de "cuánto suele moverse
   el precio", independiente y complementaria al sesgo — no una predicción de
   precio ni de dirección (ver más abajo).
+- **Backtesting del sesgo actual**: para cada sesgo posible, qué porcentaje
+  de las veces subió o bajó el precio 7/14/30 días después, calculado sobre
+  el histórico real desde que existen los ETF (2024 para BTC, 2024 para ETH).
+  Es una frecuencia empírica con su tamaño de muestra a la vista, no una
+  predicción (ver más abajo).
 
 ## Estructura
 
@@ -40,6 +46,7 @@ btc-monitor/
 ├── etf_flows.py        # Scraper + caché del flujo ETF (Farside), por activo
 ├── ili.py              # Índice de Liquidez Institucional (score + chequeo de máximo de N días)
 ├── volatility.py       # Rango de movimiento esperado (volatilidad implícita/histórica)
+├── backtest.py         # Frecuencia histórica de subida/bajada por sesgo (backtesting)
 ├── analysis.py         # Lógica de cruce de señales (sesgo alcista/bajista)
 ├── btc_monitor.py       # Versión CLI (recorre BTC/ETH/BNB con los mismos módulos)
 ├── index.html           # Frontend (SPA de un solo archivo: tabs, WebSocket, velas)
@@ -66,8 +73,10 @@ segundo, así que no hace falta que sean instantáneos).
 
 El backend existe principalmente para scrapear Farside del lado del servidor
 (evita problemas de CORS y permite cachear el resultado, ya que el dato es
-T+1 y no tiene sentido pedirlo en cada refresco) y para exponer velas/ILI ya
-calculados.
+T+1 y no tiene sentido pedirlo en cada refresco) y para exponer velas/ILI/
+backtest ya calculados. La tarjeta de backtesting puede tardar unos segundos
+la primera vez que abrís cada activo (recorre ~1-2 años de historia); una vez
+calculado queda cacheado 12 horas.
 
 ## Uso solo como CLI
 
@@ -76,7 +85,8 @@ pip install -r requirements.txt
 python btc_monitor.py
 ```
 
-Imprime el estado de BTC, ETH y BNB uno tras otro, incluyendo el ILI.
+Imprime el estado de BTC, ETH y BNB uno tras otro, incluyendo el ILI y el
+backtesting del sesgo actual (esto último tarda unos segundos por activo).
 
 ## Uso mínimo (solo precio, sin backend)
 
@@ -123,6 +133,10 @@ O conectando el repo de GitHub desde el dashboard de Vercel para que cada
 - **Volatilidad implícita**: `https://www.deribit.com/api/v2/public/get_volatility_index_data`
   (índice DVOL, público, sin API key), solo BTC y ETH. BNB (y cualquier falla
   de Deribit) usa volatilidad histórica calculada de las velas de Binance.
+- **Backtesting**: histórico completo de Farside (`farside.co.uk/bitcoin-etf-flow-all-data/`
+  y `.../ethereum-etf-flow-all-data/`, ~700 y ~560 días respectivamente, desde
+  el lanzamiento de cada ETF) + historial de funding rate de Binance
+  (`https://fapi.binance.com/fapi/v1/fundingRate`, paginado) + velas diarias.
 
 ## Cómo se calcula el sesgo
 
@@ -211,6 +225,47 @@ como un límite garantizado ni como un precio objetivo — combinado con el
 sesgo da dirección + magnitud, pero sigue sin ser una predicción puntual de
 precio ni de fecha.
 
+### Backtesting: probabilidad empírica, no una predicción
+
+Además del sesgo y del rango de movimiento, la app responde una tercera
+pregunta: *cuando el mercado se vio así antes, qué pasó realmente*.
+`backtest.py` reconstruye, día por día desde que existe cada ETF, el mismo
+sesgo que calcula `analizar_estado()` en vivo — usando solo datos
+disponibles hasta ese día, sin mirar al futuro — y lo compara con el retorno
+real del precio 7/14/30 días después. El resultado es una frecuencia
+empírica real, con su tamaño de muestra (N) siempre a la vista:
+
+> "Cuando el sesgo fue ALCISTA en el pasado (N=572, desde 2024-01-14),
+> el precio subió 7 días después el 53% de las veces."
+
+Esto es deliberadamente distinto de convertir el conteo de señales del
+sesgo en un porcentaje inventado (por ejemplo, "3 de 4 señales alcistas =
+75% de probabilidad"): ese número no significaría nada, porque nunca se
+validó contra lo que pasó en la realidad. La frecuencia del backtesting sí
+está anclada a datos reales — pero eso no la vuelve una garantía.
+
+**Limitaciones honestas de este backtesting** (mostradas también en la propia
+tarjeta de la app):
+
+- **Muestra chica**: los ETF de BTC/ETH existen desde 2024, así que hay a lo
+  sumo ~700-1000 días de historia. Categorías de sesgo poco frecuentes
+  (`DIVERGENCIA_VERDE`, `NEUTRAL`) pueden tener N muy bajo (a veces menos de
+  30-50 casos) — la app lo marca explícitamente como "muestra chica, tomalo
+  con pinzas".
+- **Ventanas solapadas**: el retorno a 7 días del lunes y el del martes
+  comparten casi los mismos precios, así que no son observaciones
+  estadísticamente independientes entre sí. El N es "días de la muestra", no
+  "eventos independientes" — esto es una frecuencia descriptiva, no un test
+  de hipótesis con significancia estadística real.
+- **El pasado no garantiza el futuro**: que un patrón se haya repetido en
+  este período específico (un mercado alcista estructural post-halving) no
+  significa que se vaya a repetir en cualquier régimen de mercado futuro.
+- **BNB** no tiene ETF, así que su backtest usa solo precio + funding (menos
+  señales, categorías de sesgo más limitadas).
+- El cálculo completo tarda varios segundos (recorre toda la historia), así
+  que se cachea 12 horas por activo; en un entorno serverless (Vercel) esa
+  caché se pierde en cada cold start, igual que la de Farside/ETF.
+
 ### Por qué no se incluye el flujo neto a exchanges (retiros/depósitos)
 
 Es una de las señales del análisis original. Se llegó a implementar vía
@@ -242,6 +297,10 @@ mismo patrón que `etf_flows.py`: un módulo propio, cacheado, que se conecta a
   suele ser algo menor al ~68% teórico por las colas más pesadas que una
   normal. No es una predicción de precio ni de fecha, es una referencia de
   magnitud típica de movimiento.
+- El backtesting tiene muestra chica (los ETF existen desde 2024) y usa
+  ventanas de retorno solapadas (no independientes entre sí); es una
+  frecuencia histórica real, no una garantía de lo que va a pasar. La
+  primera carga por activo puede tardar varios segundos.
 - El WebSocket puede no conectar en redes muy restrictivas; la app cae de
   vuelta a polling REST cada 30s mientras tanto y reintenta la conexión con
   backoff exponencial.
@@ -257,3 +316,7 @@ mismo patrón que `etf_flows.py`: un módulo propio, cacheado, que se conecta a
   del ILI, con más historial de velas.
 - Flujo neto a exchanges vía una fuente on-chain con un plan que efectivamente
   cubra el endpoint (ver nota arriba).
+- Backtesting con ventanas no solapadas (o block bootstrap) para tener una
+  muestra estadísticamente más rigurosa, a costa de un N mucho menor.
+- Caché del backtest persistente entre cold starts en serverless (hoy se
+  recalcula desde cero si el proceso se reinicia), por ejemplo con un KV store.

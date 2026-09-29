@@ -11,6 +11,7 @@ Uso:
 
 import sys
 
+import backtest
 import binance_client
 import etf_flows
 import ili
@@ -89,6 +90,23 @@ def analizar_activo(asset, cfg):
         print("   (rango estadístico, no una predicción de precio ni de dirección)")
     else:
         print("\nRango de movimiento esperado: sin datos de volatilidad disponibles")
+
+    print("\nBacktesting (puede tardar unos segundos)...")
+    try:
+        bt = backtest.get_backtest(asset, cfg["symbol"], cfg["farside_slug"])
+        datos = bt["por_sesgo"].get(estado["sesgo"])
+        if datos:
+            print(f"Cuando el sesgo fue {estado['sesgo']} en el pasado (muestra: {bt['desde']} a {bt['hasta']}):")
+            for dias in VOL_HORIZONS_DAYS:
+                d = datos.get(f"{dias}d")
+                if d:
+                    aviso = " (muestra chica, ojo)" if d["n"] < 30 else ""
+                    print(f"   {dias}d (N={d['n']}): {d['prob_subida']*100:.0f}% subió / {(1-d['prob_subida'])*100:.0f}% bajó{aviso}")
+            print("   (frecuencia histórica real, no una predicción; ventanas solapadas, no independientes)")
+        else:
+            print(f"Sin casos históricos de sesgo {estado['sesgo']} en la muestra ({bt['desde']} a {bt['hasta']})")
+    except Exception as e:
+        print(f"Backtesting: no se pudo calcular ({e})")
     print()
 
 
