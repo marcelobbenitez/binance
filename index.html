@@ -164,23 +164,14 @@
       <div class="muted" id="etf-note" style="margin-top:0.8rem"></div>
     </div>
 
-    <div class="card full">
-      <h2 id="netflow-card-title">Flujo neto a Binance (CryptoQuant) — últimos días</h2>
-      <div id="netflow-chart-wrap">
-        <div class="chart" id="netflow-chart"></div>
-      </div>
-      <div class="muted" id="netflow-note" style="margin-top:0.8rem"></div>
-    </div>
   </div>
 
   <div class="footnote">
     Fuentes: Binance (<code>data-api.binance.vision</code> REST + <code>data-stream.binance.vision</code> WebSocket
-    para precio y velas en vivo, <code>fapi.binance.com</code> para funding), Farside Investors
-    (<code>farside.co.uk</code>, flujo ETF, dato T+1, solo para BTC y ETH) y CryptoQuant
-    (<code>api.cryptoquant.com</code>, flujo neto a Binance, solo para BTC y ETH y solo si el backend tiene
-    configurada una <code>CRYPTOQUANT_API_KEY</code> propia). El ILI es una versión simplificada que normaliza el
-    flujo ETF contra su propio rango histórico (no incluye liquidez USD agregada). Gráfico de velas con
-    <code>lightweight-charts</code> (TradingView). Esto no es asesoramiento financiero.
+    para precio y velas en vivo, <code>fapi.binance.com</code> para funding) y Farside Investors
+    (<code>farside.co.uk</code>, flujo ETF, dato T+1, solo para BTC y ETH). El ILI es una versión simplificada
+    que normaliza el flujo ETF contra su propio rango histórico (no incluye liquidez USD agregada). Gráfico de
+    velas con <code>lightweight-charts</code> (TradingView). Esto no es asesoramiento financiero.
   </div>
 </div>
 
@@ -233,7 +224,6 @@ function selectAsset(id) {
   loadPriceRest(id); // pintado inmediato mientras el WS toma la posta
   loadAnalysis(id);
   loadETFChart(id);
-  loadExchangeNetflowChart(id);
   loadCandles(id);
 }
 
@@ -449,7 +439,6 @@ async function loadAnalysis(asset) {
       <div class="signal-row">${signalDot(s.etf.valor)}<span class="signal-label">ETF (7d)</span> ${s.etf.detalle}</div>
       <div class="signal-row">${signalDot(s.funding.valor)}<span class="signal-label">Funding</span> ${s.funding.detalle}</div>
       <div class="signal-row">${signalDot(s.ili.valor)}<span class="signal-label">ILI</span> ${s.ili.detalle}</div>
-      <div class="signal-row">${signalDot(s.exchange_netflow.valor)}<span class="signal-label">Binance</span> ${s.exchange_netflow.detalle}</div>
     `;
 
     renderDivergencias(d.analisis);
@@ -500,53 +489,11 @@ async function loadETFChart(asset) {
   }
 }
 
-async function loadExchangeNetflowChart(asset) {
-  const chartEl = document.getElementById('netflow-chart');
-  const note = document.getElementById('netflow-note');
-  const title = document.getElementById('netflow-card-title');
-  title.textContent = `Flujo neto a Binance (CryptoQuant) ${ASSETS[asset].label} — últimos días`;
-
-  try {
-    const d = await fetchJSON(`/api/${asset}/exchange-netflow`);
-    if (d.error) throw new Error(d.error);
-    if (asset !== currentAsset) return;
-
-    if (d.soportado === false) {
-      chartEl.innerHTML = '';
-      note.innerHTML = d.razon === 'sin_api_key'
-        ? 'Esta capa requiere una <code>CRYPTOQUANT_API_KEY</code> propia configurada en el backend (no incluida).'
-        : `${ASSETS[asset].label} no está soportado para esta señal.`;
-      return;
-    }
-
-    const dias = d.dias.filter(f => f.netflow !== null && f.netflow !== undefined);
-    if (!dias.length) throw new Error('sin datos');
-
-    const max = Math.max(...dias.map(f => Math.abs(f.netflow)), 1);
-    chartEl.innerHTML = dias.map(f => {
-      const pct = Math.max((Math.abs(f.netflow) / max) * 100, 2);
-      // Netflow positivo = entra a Binance (bajista); negativo = sale (alcista) -> invertimos los colores del de ETF
-      const cls = f.netflow <= 0 ? 'pos' : 'neg';
-      return `<div class="bar-wrap" title="${f.fecha}: ${f.netflow.toFixed(1)} ${d.unidad}">
-        <div class="bar ${cls}" style="height:${pct}%"></div>
-        <div class="bar-date">${f.fecha.slice(5)}</div>
-      </div>`;
-    }).join('');
-
-    note.textContent = `Positivo = entra a Binance (presión de venta) · Negativo = sale (posible acumulación, aunque también puede ser un rebalanceo interno hot/cold wallet).`;
-  } catch (e) {
-    if (asset !== currentAsset) return;
-    chartEl.innerHTML = '';
-    note.innerHTML = `<span class="error">No se pudo cargar el flujo a Binance.</span>`;
-  }
-}
-
 function startAnalysisRefresh() {
   if (analysisTimer) clearInterval(analysisTimer);
   analysisTimer = setInterval(() => {
     loadAnalysis(currentAsset);
     loadETFChart(currentAsset);
-    loadExchangeNetflowChart(currentAsset);
     // Si el WS no está conectado, el precio se refresca por REST como red de seguridad.
     if (!ws || ws.readyState !== WebSocket.OPEN) loadPriceRest(currentAsset);
   }, ANALYSIS_REFRESH_MS);
@@ -557,7 +504,6 @@ initChart();
 loadPriceRest(currentAsset);
 loadAnalysis(currentAsset);
 loadETFChart(currentAsset);
-loadExchangeNetflowChart(currentAsset);
 loadCandles(currentAsset);
 connectWebSocket();
 startAnalysisRefresh();
