@@ -13,8 +13,12 @@ pasado, cuando el mercado tuvo el mismo sesgo que tiene ahora.
 
 - Precio en vivo (WebSocket de Binance, sin polling) — para BTC, ETH y BNB
   (selector de pestañas en el frontend).
-- Gráfico de velas diarias (`lightweight-charts` de TradingView), con la
-  última vela actualizándose en vivo por WebSocket.
+- Gráfico de velas (`lightweight-charts` de TradingView) con selector de
+  intervalo **1H / 4H / 1D**, volumen debajo de las velas, y la última vela
+  actualizándose en vivo por WebSocket (se resuscribe automáticamente al
+  cambiar de intervalo). En 1D, además, marcadores de flujo ETF directo sobre
+  las velas (flecha verde/roja con el monto) para ver precio + flujo
+  institucional en el mismo gráfico.
 - Flujo neto diario de los ETF spot (IBIT, FBTC, GBTC, ARKB, ETHA, ETHE,
   etc.), scrapeado de Farside Investors — disponible para **BTC y ETH**.
   BNB no tiene ETF spot aprobado en EE.UU., así que esa capa se muestra

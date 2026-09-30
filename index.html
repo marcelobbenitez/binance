@@ -42,6 +42,10 @@
     user-select: none;
   }
   .tab.active { background: var(--text); color: #0a0a0a; border-color: var(--text); }
+  .tab-sm { padding: 0.3rem 0.7rem; font-size: 0.75rem; }
+
+  .card-header-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.8rem; }
+  .card-header-row h2 { margin: 0; }
 
   .live-dot {
     display: inline-flex; align-items: center; gap: 0.4rem;
@@ -171,7 +175,10 @@
     </div>
 
     <div class="card full">
-      <h2>Gráfico de velas (1D)</h2>
+      <div class="card-header-row">
+        <h2>Gráfico de velas</h2>
+        <div class="tabs" id="interval-tabs" style="margin-bottom:0"></div>
+      </div>
       <div class="candles" id="candles"></div>
     </div>
 
@@ -205,20 +212,32 @@ const ASSETS = {
 };
 const SYMBOL_TO_ASSET = Object.fromEntries(Object.entries(ASSETS).map(([id, cfg]) => [cfg.symbol, id]));
 const ANALYSIS_REFRESH_MS = 30000; // el sesgo/ETF/funding no necesitan ser instantáneos
-const WS_URL = 'wss://data-stream.binance.vision/stream?streams=' +
-  Object.values(ASSETS).map(a => `${a.symbol.toLowerCase()}@ticker`).join('/') + '/' +
-  Object.values(ASSETS).map(a => `${a.symbol.toLowerCase()}@kline_1d`).join('/');
+const INTERVALS = ['1h', '4h', '1d'];
+const INTERVAL_LABELS = { '1h': '1H', '4h': '4H', '1d': '1D' };
+const INTERVAL_KLINE_LIMIT = { '1h': 240, '4h': 240, '1d': 180 };
+
+function buildWsUrl() {
+  const tickers = Object.values(ASSETS).map(a => `${a.symbol.toLowerCase()}@ticker`);
+  const klines = Object.values(ASSETS).map(a => `${a.symbol.toLowerCase()}@kline_${currentInterval}`);
+  return 'wss://data-stream.binance.vision/stream?streams=' + tickers.concat(klines).join('/');
+}
 
 let currentAsset = 'btc';
+let currentInterval = '1d';
 let analysisTimer = null;
 let ws = null;
 let wsReconnectDelay = 1000;
 
 let chart = null;
 let chartSeries = null;
-const candlesByAsset = { btc: null, eth: null, bnb: null };
+let volumeSeries = null;
+const candleCache = {}; // clave `${asset}:${interval}` -> [{time,open,high,low,close,volume}]
 const backtestByAsset = { btc: null, eth: null, bnb: null }; // null = no pedido, 'error' = falló, obj = resultado
 const sesgoActualByAsset = { btc: null, eth: null, bnb: null };
+
+function candleKey(asset, interval) {
+  return `${asset}:${interval}`;
+}
 
 const SESGO_LABELS = {
   ALCISTA: 'ALCISTA',
@@ -256,8 +275,26 @@ function selectAsset(id) {
   loadPriceRest(id); // pintado inmediato mientras el WS toma la posta
   loadAnalysis(id);
   loadETFChart(id);
-  loadCandles(id);
+  loadCandles(id, currentInterval);
   loadBacktest(id);
+}
+
+function renderIntervalTabs() {
+  const el = document.getElementById('interval-tabs');
+  el.innerHTML = INTERVALS.map(iv =>
+    `<div class="tab tab-sm ${iv === currentInterval ? 'active' : ''}" data-interval="${iv}">${INTERVAL_LABELS[iv]}</div>`
+  ).join('');
+  el.querySelectorAll('.tab').forEach(el2 => {
+    el2.addEventListener('click', () => selectInterval(el2.dataset.interval));
+  });
+}
+
+function selectInterval(iv) {
+  if (iv === currentInterval || !INTERVALS.includes(iv)) return;
+  currentInterval = iv;
+  renderIntervalTabs();
+  loadCandles(currentAsset, currentInterval);
+  reconnectWebSocket(); // el stream de velas en vivo depende del intervalo elegido
 }
 
 // ---------- Precio: WebSocket en vivo con fallback REST ----------
@@ -310,7 +347,7 @@ function setLiveStatus(on, label) {
 
 function connectWebSocket() {
   try {
-    ws = new WebSocket(WS_URL);
+    ws = new WebSocket(buildWsUrl());
   } catch (e) {
     scheduleReconnect();
     return;
@@ -341,13 +378,15 @@ function connectWebSocket() {
     } else if (stream.includes('@kline_')) {
       const assetId = SYMBOL_TO_ASSET[data.s];
       if (!assetId) return;
+      const interval = stream.split('@kline_')[1];
       const k = data.k;
-      applyKlineUpdate(assetId, {
+      applyKlineUpdate(assetId, interval, {
         time: Math.floor(k.t / 1000),
         open: parseFloat(k.o),
         high: parseFloat(k.h),
         low: parseFloat(k.l),
         close: parseFloat(k.c),
+        volume: parseFloat(k.v),
       });
     }
   };
@@ -366,6 +405,18 @@ function scheduleReconnect() {
   wsReconnectDelay = Math.min(wsReconnectDelay * 2, 30000);
 }
 
+function reconnectWebSocket() {
+  // Reconexión intencional (cambio de intervalo): saca el handler de cierre
+  // de la conexión vieja para que no dispare su propio reintento con backoff.
+  if (ws) {
+    ws.onclose = null;
+    ws.close();
+  }
+  wsReconnectDelay = 1000;
+  setLiveStatus(false, 'cambiando intervalo…');
+  connectWebSocket();
+}
+
 // ---------- Gráfico de velas ----------
 
 function initChart() {
@@ -373,47 +424,67 @@ function initChart() {
   const container = document.getElementById('candles');
   chart = LightweightCharts.createChart(container, {
     width: container.clientWidth,
-    height: 280,
+    height: 320,
     layout: { background: { color: 'transparent' }, textColor: '#8a8a8a' },
     grid: { vertLines: { color: '#1f1f1f' }, horzLines: { color: '#1f1f1f' } },
     timeScale: { borderColor: '#262626' },
-    rightPriceScale: { borderColor: '#262626' },
+    rightPriceScale: { borderColor: '#262626', scaleMargins: { top: 0.1, bottom: 0.28 } },
   });
   chartSeries = chart.addCandlestickSeries({
     upColor: '#00c853', downColor: '#ff5252', borderVisible: false,
     wickUpColor: '#00c853', wickDownColor: '#ff5252',
   });
+  volumeSeries = chart.addHistogramSeries({
+    priceFormat: { type: 'volume' },
+    priceScaleId: 'volume',
+  });
+  chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
   window.addEventListener('resize', () => {
     if (chart) chart.applyOptions({ width: container.clientWidth });
   });
 }
 
-async function loadCandles(asset) {
+function volumeColor(vela) {
+  return vela.close >= vela.open ? 'rgba(0,200,83,0.5)' : 'rgba(255,82,82,0.5)';
+}
+
+function renderCandles(velas) {
+  chartSeries.setData(velas);
+  volumeSeries.setData(velas.map(v => ({ time: v.time, value: v.volume || 0, color: volumeColor(v) })));
+}
+
+async function loadCandles(asset, interval) {
   if (!chartSeries) return;
-  if (candlesByAsset[asset]) {
-    if (asset === currentAsset) chartSeries.setData(candlesByAsset[asset]);
+  const key = candleKey(asset, interval);
+  if (candleCache[key]) {
+    if (asset === currentAsset && interval === currentInterval) renderCandles(candleCache[key]);
     return;
   }
+  const limit = INTERVAL_KLINE_LIMIT[interval] || 180;
   try {
     let velas;
     try {
-      const d = await fetchJSON(`/api/${asset}/klines`);
+      const d = await fetchJSON(`/api/${asset}/klines?interval=${interval}&limit=${limit}`);
       if (d.error) throw new Error(d.error);
       velas = d.velas;
     } catch (backendErr) {
-      const r = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${ASSETS[asset].symbol}&interval=1d&limit=90`);
+      const r = await fetch(`https://data-api.binance.vision/api/v3/klines?symbol=${ASSETS[asset].symbol}&interval=${interval}&limit=${limit}`);
       const raw = await r.json();
-      velas = raw.map(row => ({ time: Math.floor(row[0] / 1000), open: +row[1], high: +row[2], low: +row[3], close: +row[4] }));
+      velas = raw.map(row => ({ time: Math.floor(row[0] / 1000), open: +row[1], high: +row[2], low: +row[3], close: +row[4], volume: +row[5] }));
     }
-    candlesByAsset[asset] = velas;
-    if (asset === currentAsset) chartSeries.setData(velas);
+    candleCache[key] = velas;
+    if (asset === currentAsset && interval === currentInterval) {
+      renderCandles(velas);
+      loadEtfMarkers(asset);
+    }
   } catch (e) {
     // sin velas: el resto de la app sigue funcionando igual
   }
 }
 
-function applyKlineUpdate(assetId, candle) {
-  const arr = candlesByAsset[assetId];
+function applyKlineUpdate(assetId, interval, candle) {
+  const key = candleKey(assetId, interval);
+  const arr = candleCache[key];
   if (!arr || !arr.length) return; // esperar a que la carga inicial (REST) llegue primero
   const last = arr[arr.length - 1];
   if (last && last.time === candle.time) {
@@ -421,8 +492,50 @@ function applyKlineUpdate(assetId, candle) {
   } else if (!last || candle.time > last.time) {
     arr.push(candle);
   }
-  if (assetId === currentAsset && chartSeries) {
+  if (assetId === currentAsset && interval === currentInterval && chartSeries) {
     chartSeries.update(candle);
+    volumeSeries.update({ time: candle.time, value: candle.volume || 0, color: volumeColor(candle) });
+  }
+}
+
+// ---------- Marcadores de flujo ETF sobre las velas (solo en 1D) ----------
+
+const MESES = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+
+function fechaFarsideAUnixSeconds(fecha) {
+  const [dia, mes, año] = fecha.split(' ');
+  return Math.floor(Date.UTC(+año, MESES[mes], +dia) / 1000);
+}
+
+async function loadEtfMarkers(asset) {
+  if (!chartSeries) return;
+  if (currentInterval !== '1d') {
+    chartSeries.setMarkers([]);
+    return;
+  }
+  try {
+    const d = await fetchJSON(`/api/${asset}/etf-flows?days=${INTERVAL_KLINE_LIMIT['1d']}`);
+    if (asset !== currentAsset || currentInterval !== '1d') return; // la respuesta llegó tarde, ya cambiamos de vista
+    if (d.error || d.soportado === false) {
+      chartSeries.setMarkers([]);
+      return;
+    }
+    const marcadores = d.flows
+      .filter(f => f.Total !== null && f.Total !== undefined && f.Total !== 0)
+      .map(f => {
+        const sube = f.Total > 0;
+        return {
+          time: fechaFarsideAUnixSeconds(f.fecha),
+          position: sube ? 'belowBar' : 'aboveBar',
+          color: sube ? '#00c853' : '#ff5252',
+          shape: sube ? 'arrowUp' : 'arrowDown',
+          text: `${sube ? '+' : ''}${f.Total.toFixed(0)}M`,
+        };
+      })
+      .sort((a, b) => a.time - b.time);
+    chartSeries.setMarkers(marcadores);
+  } catch (e) {
+    // sin marcadores: el gráfico de velas sigue funcionando igual
   }
 }
 
@@ -643,11 +756,12 @@ function startAnalysisRefresh() {
 }
 
 renderTabs();
+renderIntervalTabs();
 initChart();
 loadPriceRest(currentAsset);
 loadAnalysis(currentAsset);
 loadETFChart(currentAsset);
-loadCandles(currentAsset);
+loadCandles(currentAsset, currentInterval);
 loadBacktest(currentAsset);
 connectWebSocket();
 startAnalysisRefresh();

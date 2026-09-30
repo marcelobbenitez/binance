@@ -9,7 +9,7 @@ poder cachear el scrape de Farside.
 
 import os
 
-from flask import Flask, abort, jsonify, send_from_directory
+from flask import Flask, abort, jsonify, request, send_from_directory
 
 import backtest
 import binance_client
@@ -22,6 +22,7 @@ from assets_config import ASSETS
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ILI_WINDOW_DAYS = 30  # ventana para el chequeo de "nuevo máximo de N días" del ILI
 VOL_HORIZONS_DAYS = (7, 14, 30)  # plazos para el rango de movimiento esperado
+ALLOWED_KLINE_INTERVALS = {"1h", "4h", "1d"}
 
 app = Flask(__name__, static_folder=None)
 
@@ -60,9 +61,17 @@ def api_etf_flows(asset):
     cfg = _asset_config(asset)
     if cfg["farside_slug"] is None:
         return jsonify({"flows": [], "soportado": False})
+
+    days = request.args.get("days", 14, type=int) or 14
+    days = max(1, min(days, 400))
+
     try:
-        flows = etf_flows.get_etf_flows(cfg["farside_slug"])
-        return jsonify({"flows": flows[-14:], "soportado": True})  # ~2 semanas alcanza para el gráfico
+        # El histórico completo (cacheado 24h) también sirve para la vista de
+        # ~14 días; evita mantener dos scrapes separados de la misma info.
+        flows = etf_flows.get_full_history(cfg["farside_slug"])
+        if not flows:
+            flows = etf_flows.get_etf_flows(cfg["farside_slug"])
+        return jsonify({"flows": flows[-days:], "soportado": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 
@@ -70,9 +79,13 @@ def api_etf_flows(asset):
 @app.get("/api/<asset>/klines")
 def api_klines(asset):
     cfg = _asset_config(asset)
-    interval = "1d"
+    interval = request.args.get("interval", "1d")
+    if interval not in ALLOWED_KLINE_INTERVALS:
+        interval = "1d"
+    limit = request.args.get("limit", 180, type=int) or 180
+    limit = max(10, min(limit, 500))
     try:
-        return jsonify({"interval": interval, "velas": binance_client.get_klines(cfg["symbol"], interval=interval, limit=90)})
+        return jsonify({"interval": interval, "velas": binance_client.get_klines(cfg["symbol"], interval=interval, limit=limit)})
     except Exception as e:
         return jsonify({"error": str(e)}), 502
 

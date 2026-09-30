@@ -47,6 +47,7 @@ def get_klines(symbol="BTCUSDT", interval="1d", limit=90):
             "high": float(row[2]),
             "low": float(row[3]),
             "close": float(row[4]),
+            "volume": float(row[5]),
         }
         for row in rows
     ]
